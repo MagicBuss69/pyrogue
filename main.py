@@ -1,4 +1,4 @@
-"""Main entry point and Steam-Edition game state controller for Crypts of the Obsidian King."""
+"""Main entry point and Steam-Edition v3.0 controller for Crypts of the Obsidian King (5 Biomes, 5 Bosses, Full Soundtrack)."""
 
 import argparse
 import math
@@ -39,6 +39,7 @@ from settings import (
     COLOR_GOLD,
     COLOR_HP_BAR,
     COLOR_PICKUP_HP,
+    COLOR_SHRINE,
     COLOR_SWORD_CRIT,
     COLOR_SWORD_TRAIL,
     FPS,
@@ -50,31 +51,35 @@ from settings import (
     SCORE_CRATE_BREAK,
     SCORE_FLOOR_CLEAR,
     SCORE_HEALTH_PICKUP,
+    SCORE_SHRINE_USE,
     SCREEN_HEIGHT,
     SCREEN_WIDTH,
     TILE_SIZE,
+    get_biome_theme,
 )
 from ui import Renderer
 
 
 class Game:
-    """Top-level game state machine managing menu, combat, abilities, relic level-ups, pause, and game over."""
+    """Top-level game state machine managing 5 biomes, 5 floor bosses, BGM soundtrack, codex, abilities, and relics."""
 
     def __init__(self, seed: Optional[int] = None) -> None:
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption(GAME_TITLE)
-        # Ensure the mouse cursor is never trapped or grabbed by the window
+        # Never grab or trap the mouse cursor
         pygame.event.set_grab(False)
         pygame.mouse.set_visible(True)
 
         self.clock = pygame.time.Clock()
         self.renderer = Renderer(self.screen)
         self.sound = SoundManager()
+        self.sound.play_bgm("menu")
 
         self.base_seed = seed
-        # States: "MENU", "PLAYING", "LEVEL_UP", "PAUSED", "GAME_OVER", "VICTORY"
+        # States: "MENU", "PLAYING", "LEVEL_UP", "PAUSED", "CODEX", "GAME_OVER", "VICTORY"
         self.state: str = "MENU"
+        self.prev_state_before_codex: str = "MENU"
         self.menu_index: int = 0
         self.pause_index: int = 0
         self.relic_choice_index: int = 0
@@ -86,6 +91,7 @@ class Game:
         self.score: int = 0
         self.floor_num: int = 1
         self.run_kills: int = 0
+        self.run_bosses_slain: int = 0
         self.used_abilities_this_run: Set[str] = set()
         self.unlocked_achievements: Set[str] = set(
             self.hs_data.get("achievements", [])
@@ -107,12 +113,15 @@ class Game:
         self.toast_text: str = ""
         self.toast_timer: float = 0.0
 
-        # Track last mouse position so stationary/unavailable mice never hijack aim
         self.last_mouse_pos: Tuple[int, int] = pygame.mouse.get_pos()
         self.mouse_active_timer: float = 0.0
 
-    def unlock_achievement(self, ach_id: str) -> None:
-        if ach_id in self.unlocked_achievements:
+    @property
+    def is_music_on(self) -> bool:
+        return not (self.sound.muted or self.sound.music_muted)
+
+    def unlock_achievement(self, ach_id: Optional[str]) -> None:
+        if not ach_id or ach_id in self.unlocked_achievements:
             return
         self.unlocked_achievements.add(ach_id)
         ach_info = next(
@@ -120,13 +129,14 @@ class Game:
         )
         if ach_info:
             self.toast_text = f"{ach_info['name']} — {ach_info['desc']}"
-            self.toast_timer = 4.0
+            self.toast_timer = 4.2
             self.sound.play("levelup")
 
     def start_new_run(self) -> None:
         self.score = 0
         self.floor_num = 1
         self.run_kills = 0
+        self.run_bosses_slain = 0
         self.used_abilities_this_run.clear()
         self.player = Player(0.0, 0.0)
         self._load_floor(1)
@@ -134,6 +144,9 @@ class Game:
 
     def _load_floor(self, floor_num: int) -> None:
         self.floor_num = floor_num
+        biome = get_biome_theme(floor_num)
+        self.sound.play_bgm(biome["bgm_track"])
+
         floor_seed = (
             (self.base_seed + floor_num * 101)
             if self.base_seed is not None
@@ -143,12 +156,9 @@ class Game:
         assert self.player is not None
         self.player.x, self.player.y = self.dungeon.player_start
         if floor_num > 1:
-            self.player.damage += 3
-            self.player.heal(20)
+            self.player.damage += 4
+            self.player.heal(28)
             self.sound.play("stairs")
-
-        if floor_num >= BOSS_FLOOR:
-            self.unlock_achievement("deep_delver")
 
         self.enemies = [
             Enemy(
@@ -174,11 +184,10 @@ class Game:
         self.renderer.cam_x = self.player.x - SCREEN_WIDTH * 0.5
         self.renderer.cam_y = self.player.y - SCREEN_HEIGHT * 0.5
 
-        if floor_num == BOSS_FLOOR:
-            self.banner_text = "FLOOR 5: OBSIDIAN SANCTUM — VANQUISH MALAKOR!"
-        else:
-            self.banner_text = f"FLOOR {floor_num} — DESCEND THE GOLDEN STAIRS"
-        self.banner_timer = 3.2
+        self.banner_text = (
+            f"AREA {floor_num}: {biome['name']} — GUARDIAN: {biome['boss_name'].upper()}"
+        )
+        self.banner_timer = 3.8
 
     def _spawn_burst(
         self,
@@ -230,7 +239,9 @@ class Game:
                     scale=1.25,
                 )
             )
-            self._spawn_burst(self.player.x, self.player.y, chosen["color"], count=20, speed=190.0)
+            self._spawn_burst(
+                self.player.x, self.player.y, chosen["color"], count=20, speed=190.0
+            )
             self.sound.play("pickup")
         self.state = "PLAYING"
 
@@ -244,15 +255,43 @@ class Game:
                     self.last_mouse_pos = event.pos
                     self.mouse_active_timer = 1.6
 
+            # Global Audio Volume hotkeys (- / +)
+            if event.type == pygame.KEYDOWN:
+                if event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                    self.sound.adjust_volume(-0.10)
+                elif event.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                    self.sound.adjust_volume(0.10)
+
+            if self.state == "CODEX":
+                if event.type == pygame.KEYDOWN and event.key in (
+                    pygame.K_ESCAPE,
+                    pygame.K_c,
+                    pygame.K_TAB,
+                    pygame.K_RETURN,
+                    pygame.K_SPACE,
+                ):
+                    self.state = self.prev_state_before_codex
+                continue
+
             if self.state == "MENU":
                 if event.type == pygame.KEYDOWN:
                     if event.key in (pygame.K_UP, pygame.K_w):
-                        self.menu_index = (self.menu_index - 1) % 2
+                        self.menu_index = (self.menu_index - 1) % 4
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.menu_index = (self.menu_index + 1) % 2
+                        self.menu_index = (self.menu_index + 1) % 4
+                    elif event.key in (pygame.K_c, pygame.K_TAB):
+                        self.prev_state_before_codex = "MENU"
+                        self.state = "CODEX"
+                    elif event.key == pygame.K_m:
+                        self.sound.toggle_music()
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         if self.menu_index == 0:
                             self.start_new_run()
+                        elif self.menu_index == 1:
+                            self.prev_state_before_codex = "MENU"
+                            self.state = "CODEX"
+                        elif self.menu_index == 2:
+                            self.sound.toggle_music()
                         else:
                             return False
                     elif event.key == pygame.K_ESCAPE:
@@ -284,21 +323,30 @@ class Game:
                     if event.key == pygame.K_ESCAPE:
                         self.state = "PLAYING"
                     elif event.key in (pygame.K_UP, pygame.K_w):
-                        self.pause_index = (self.pause_index - 1) % 4
+                        self.pause_index = (self.pause_index - 1) % 6
                     elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.pause_index = (self.pause_index + 1) % 4
+                        self.pause_index = (self.pause_index + 1) % 6
+                    elif event.key in (pygame.K_c, pygame.K_TAB):
+                        self.prev_state_before_codex = "PAUSED"
+                        self.state = "CODEX"
+                    elif event.key == pygame.K_m:
+                        self.sound.toggle_music()
                     elif event.key == pygame.K_r:
                         self.start_new_run()
-                    elif event.key == pygame.K_m:
-                        self.state = "MENU"
                     elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
                         if self.pause_index == 0:
                             self.state = "PLAYING"
                         elif self.pause_index == 1:
-                            self.start_new_run()
+                            self.prev_state_before_codex = "PAUSED"
+                            self.state = "CODEX"
                         elif self.pause_index == 2:
-                            self.state = "MENU"
+                            self.sound.toggle_music()
                         elif self.pause_index == 3:
+                            self.start_new_run()
+                        elif self.pause_index == 4:
+                            self.sound.play_bgm("menu")
+                            self.state = "MENU"
+                        elif self.pause_index == 5:
                             return False
 
             elif self.state == "PLAYING":
@@ -307,6 +355,11 @@ class Game:
                     if event.key in (pygame.K_ESCAPE, pygame.K_p):
                         self.pause_index = 0
                         self.state = "PAUSED"
+                    elif event.key in (pygame.K_c, pygame.K_TAB):
+                        self.prev_state_before_codex = "PLAYING"
+                        self.state = "CODEX"
+                    elif event.key == pygame.K_m:
+                        self.sound.toggle_music()
                     elif event.key in (pygame.K_SPACE, pygame.K_j):
                         if self.player.start_attack(self._get_smart_aim_angle()):
                             self.sound.play("slash")
@@ -331,6 +384,7 @@ class Game:
                     if event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_r):
                         self.start_new_run()
                     elif event.key == pygame.K_m:
+                        self.sound.play_bgm("menu")
                         self.state = "MENU"
                     elif event.key == pygame.K_ESCAPE:
                         return False
@@ -393,7 +447,6 @@ class Game:
         if not self.player.can_cast_lightning():
             return
 
-        # Find up to ABILITY_LIGHTNING_CHAINS nearest living enemies in range
         living = [
             e
             for e in self.enemies
@@ -402,7 +455,6 @@ class Game:
             <= ABILITY_LIGHTNING_RANGE
         ]
         if not living:
-            # Still fire a visual lightning arc forward even if no enemies in range
             self.player.trigger_lightning_cooldown()
             self.sound.play("lightning")
             tx = self.player.x + math.cos(self.player.facing_angle) * 180.0
@@ -439,7 +491,9 @@ class Game:
                 LightningBoltFX(points=bolt_pts, color=COLOR_ABILITY_LIGHTNING)
             )
             dmg, is_crit = self.player.roll_damage(base_dmg)
-            self._damage_enemy(target, dmg, is_crit, prev_x, prev_y, COLOR_ABILITY_LIGHTNING)
+            self._damage_enemy(
+                target, dmg, is_crit, prev_x, prev_y, COLOR_ABILITY_LIGHTNING
+            )
             prev_x, prev_y = target.x, target.y
 
     def _check_storm_weaver_achievement(self) -> None:
@@ -475,7 +529,6 @@ class Game:
         if keys[pygame.K_s]:
             dy += 1.0
 
-        # If WASD isn't pressed, also allow Arrow keys to move if the player prefers single-stick play
         if abs(dx) < 0.01 and abs(dy) < 0.01:
             if keys[pygame.K_LEFT]:
                 dx -= 1.0
@@ -489,11 +542,11 @@ class Game:
 
     def _get_smart_aim_angle(self) -> Optional[float]:
         """
-        Smart Multi-Modal Aiming (fixes mouse-stuck issues completely):
-        1. Twin-Stick Arrow Keys: If any Arrow key is held, aim in that 8-way direction.
-        2. Auto-Target Nearest Threat: If an enemy is within 210px and visible, snap-assist toward it.
-        3. Movement Direction: If moving with WASD, face the movement vector.
-        4. Active Mouse: Only use mouse cursor if the mouse was recently moved.
+        Smart Multi-Modal Aiming:
+        1. Twin-Stick Arrow Keys
+        2. Auto-Target Nearest Enemy within 215px
+        3. Movement Direction
+        4. Active Mouse
         """
         if self.player is None:
             return None
@@ -514,9 +567,8 @@ class Game:
             self.player.aim_mode = "KEYS"
             return math.atan2(ay, ax)
 
-        # Smart melee/combat auto-aim toward closest living enemy within 210px
         nearest_enemy: Optional[Enemy] = None
-        nearest_dist = 210.0
+        nearest_dist = 215.0
         for e in self.enemies:
             if not e.alive:
                 continue
@@ -531,13 +583,11 @@ class Game:
                 nearest_enemy.y - self.player.y, nearest_enemy.x - self.player.x
             )
 
-        # Movement direction aim
         mx, my = self._get_move_vector()
         if abs(mx) > 0.01 or abs(my) > 0.01:
             self.player.aim_mode = "MOVE"
             return math.atan2(my, mx)
 
-        # If mouse was actively moved recently, aim toward mouse
         if self.mouse_active_timer > 0.0:
             self.player.aim_mode = "MOUSE"
             mpx, mpy = pygame.mouse.get_pos()
@@ -587,12 +637,37 @@ class Game:
         )
 
         if not enemy.alive:
-            self.sound.play("kill")
             self.run_kills += 1
             self.unlock_achievement("first_blood")
             self.score += enemy.score_value
-            if self.score >= 1500:
+            if self.score >= 2500:
                 self.unlock_achievement("centurion")
+
+            if enemy.is_boss:
+                self.run_bosses_slain += 1
+                self.sound.play("boss_kill")
+                self.renderer.trigger_shake(12.0, 0.38)
+                self.unlock_achievement(enemy.achievement_id)
+                self.shockwaves.append(
+                    ShockwaveRingFX(
+                        x=enemy.x,
+                        y=enemy.y,
+                        radius=14.0,
+                        max_radius=170.0,
+                        color=enemy.color,
+                    )
+                )
+                # Unlock the floor's golden portal stairs!
+                if not self.dungeon.stairs_unlocked:
+                    self.dungeon.stairs_unlocked = True
+                    self.banner_text = (
+                        f"{enemy.name.upper()} VANQUISHED! — GOLDEN PORTAL UNLOCKED!"
+                    )
+                    self.banner_timer = 4.0
+                # Bosses always drop a Crimson Elixir
+                self.pickups.append(HealthPickup(x=enemy.x, y=enemy.y))
+            else:
+                self.sound.play("kill")
 
             self.dungeon.add_decal(
                 enemy.x,
@@ -600,19 +675,20 @@ class Game:
                 color=(38, 18, 42) if enemy.enemy_type != "slime" else (18, 52, 32),
                 radius=enemy.radius * 0.9,
             )
-            self._spawn_burst(enemy.x, enemy.y, enemy.color, count=22, speed=195.0)
+            self._spawn_burst(enemy.x, enemy.y, enemy.color, count=26 if enemy.is_boss else 20, speed=210.0)
             self.floating_texts.append(
                 FloatingText(
                     enemy.x,
                     enemy.y - enemy.radius - 18,
                     f"+{enemy.score_value}",
                     COLOR_GOLD,
+                    scale=1.3 if enemy.is_boss else 1.0,
                 )
             )
             if self.player.vampiric_heal > 0:
                 self.player.heal(self.player.vampiric_heal)
 
-            if random.random() < 0.25:
+            if not enemy.is_boss and random.random() < 0.25:
                 self.pickups.append(HealthPickup(x=enemy.x, y=enemy.y))
 
             if self.player.gain_xp(enemy.xp_value):
@@ -663,12 +739,44 @@ class Game:
         if self.player.is_dashing:
             self._resolve_dash_hits()
 
+        # Check interactive Arcane Shrines
+        for shrine in self.dungeon.shrines:
+            if shrine.used:
+                continue
+            if (
+                math.hypot(self.player.x - shrine.x, self.player.y - shrine.y)
+                <= self.player.radius + shrine.radius + 8.0
+            ):
+                shrine.used = True
+                self.sound.play("shrine")
+                self.score += SCORE_SHRINE_USE
+                if shrine.shrine_type == "vitality":
+                    self.player.max_hp += 20
+                    self.player.heal(60)
+                    msg = "SHRINE OF VITALITY: +20 MAX HP & +60 HEAL!"
+                    col = (95, 250, 145)
+                elif shrine.shrine_type == "fury":
+                    self.player.damage = int(self.player.damage * 1.18) + 3
+                    msg = "SHRINE OF FURY: +18% ATTACK POWER!"
+                    col = (255, 110, 85)
+                else:
+                    self.player.speed *= 1.12
+                    self.player.cooldown_Multiplier *= 0.88
+                    msg = "SHRINE OF HASTE: +12% SPEED & COOLDOWN RECOVERY!"
+                    col = COLOR_SHRINE
+                self.floating_texts.append(
+                    FloatingText(
+                        shrine.x, shrine.y - 26, msg, col, lifetime=1.5, max_lifetime=1.5, scale=1.25
+                    )
+                )
+                self._spawn_burst(shrine.x, shrine.y, col, count=22, speed=180.0)
+
         # Update destructible crates
         for crate in self.dungeon.crates:
             if crate.hit_flash > 0.0:
                 crate.hit_flash = max(0.0, crate.hit_flash - dt)
 
-        # Update enemies
+        # Update enemies & floor bosses
         new_minions: List[Enemy] = []
         for enemy in self.enemies:
             if not enemy.alive:
@@ -676,7 +784,7 @@ class Game:
             events = enemy.update(dt, self.player, self.dungeon)
             if events.projectiles:
                 self.projectiles.extend(events.projectiles)
-            if events.spawned_minions and len(self.enemies) < 18:
+            if events.spawned_minions and len(self.enemies) < 20:
                 new_minions.extend(events.spawned_minions)
             if events.shockwave:
                 self.renderer.trigger_shake(8.5, 0.24)
@@ -685,7 +793,7 @@ class Game:
                         x=enemy.x,
                         y=enemy.y,
                         radius=12.0,
-                        max_radius=120.0,
+                        max_radius=125.0,
                         color=enemy.color,
                     )
                 )
@@ -710,7 +818,12 @@ class Game:
         if new_minions:
             self.enemies.extend(new_minions)
 
-        # Update projectiles (both Player Eldritch Nova lances & Enemy bolts)
+        # Ensure stairs unlock if the floor boss is dead
+        boss_alive = any(e.is_boss and e.alive for e in self.enemies)
+        if not boss_alive and not self.dungeon.stairs_unlocked:
+            self.dungeon.stairs_unlocked = True
+
+        # Update projectiles
         for proj in self.projectiles:
             if not proj.alive:
                 continue
@@ -797,25 +910,25 @@ class Game:
                 self.floor_num,
                 victory=False,
                 kills=self.run_kills,
+                bosses_slain=self.run_bosses_slain,
                 unlocked_achievements=list(self.unlocked_achievements),
             )
             self.state = "GAME_OVER"
             return
 
-        if self.floor_num == BOSS_FLOOR:
-            boss_alive = any(e.is_boss and e.alive for e in self.enemies)
-            if not boss_alive:
-                self.score += SCORE_FLOOR_CLEAR * 2
-                self.unlock_achievement("kingslayer")
-                self.hs_data = save_highscore_data(
-                    self.score,
-                    self.floor_num,
-                    victory=True,
-                    kills=self.run_kills,
-                    unlocked_achievements=list(self.unlocked_achievements),
-                )
-                self.state = "VICTORY"
-                return
+        if self.floor_num == BOSS_FLOOR and not boss_alive:
+            self.score += SCORE_FLOOR_CLEAR * 2
+            self.unlock_achievement("kingslayer")
+            self.hs_data = save_highscore_data(
+                self.score,
+                self.floor_num,
+                victory=True,
+                kills=self.run_kills,
+                bosses_slain=self.run_bosses_slain,
+                unlocked_achievements=list(self.unlocked_achievements),
+            )
+            self.state = "VICTORY"
+            return
 
         if self.dungeon.stairs_tile is not None and self.dungeon.stairs_unlocked:
             stx, sty = self.dungeon.stairs_tile
@@ -832,7 +945,7 @@ class Game:
         assert self.player is not None
         assert self.dungeon is not None
         is_finisher = self.player.combo_step == 2
-        reach = PLAYER_ATTACK_RANGE * (1.22 if is_finisher else 1.0)
+        reach = PLAYER_ATTACK_RANGE * (1.24 if is_finisher else 1.0)
         half_arc = PLAYER_ATTACK_ARC * (0.62 if is_finisher else 0.55)
         combo_mult = 1.35 if is_finisher else (1.12 if self.player.combo_step == 1 else 1.0)
 
@@ -863,7 +976,6 @@ class Game:
                         COLOR_SWORD_CRIT if is_finisher else COLOR_SWORD_TRAIL,
                     )
 
-        # Break destructible crates in sword arc
         for crate in self.dungeon.crates:
             if crate.destroyed:
                 continue
@@ -878,7 +990,6 @@ class Game:
                 if random.random() < 0.35:
                     self.pickups.append(HealthPickup(x=crate.x, y=crate.y))
 
-        # Deflect enemy projectiles in sword arc
         for proj in self.projectiles:
             if not proj.alive or proj.from_player:
                 continue
@@ -917,7 +1028,6 @@ class Game:
                     COLOR_ABILITY_WHIRLWIND,
                 )
 
-        # Whirlwind also shatters nearby crates and enemy projectiles
         for crate in self.dungeon.crates:
             if not crate.destroyed and (
                 math.hypot(crate.x - self.player.x, crate.y - self.player.y)
@@ -947,21 +1057,49 @@ class Game:
             dist = math.hypot(enemy.x - self.player.x, enemy.y - self.player.y)
             if dist <= self.player.radius + enemy.radius + 10.0:
                 self.player.dash_hit_ids.add(enemy.id)
-                dmg = int(PLAYER_DASH_DAMAGE * self.player.ability_power_mult)
+                mult = 1.45 if self.player.cinder_dash else 1.0
+                dmg = int(PLAYER_DASH_DAMAGE * self.player.ability_power_mult * mult)
                 self._damage_enemy(
                     enemy,
                     dmg,
                     False,
                     self.player.x,
                     self.player.y,
-                    COLOR_ABILITY_DASH,
+                    (255, 140, 50) if self.player.cinder_dash else COLOR_ABILITY_DASH,
                 )
 
     def render(self) -> None:
         if self.state == "MENU":
             self.renderer.render_main_menu(
-                self.hs_data, self.menu_index, self.time_sec
+                self.hs_data, self.menu_index, self.time_sec, music_on=self.is_music_on
             )
+        elif self.state == "CODEX":
+            if self.prev_state_before_codex == "MENU" or self.dungeon is None or self.player is None:
+                self.renderer.render_main_menu(
+                    self.hs_data, self.menu_index, self.time_sec, music_on=self.is_music_on
+                )
+            else:
+                self.renderer.render_gameplay(
+                    dungeon=self.dungeon,
+                    player=self.player,
+                    enemies=self.enemies,
+                    projectiles=self.projectiles,
+                    pickups=self.pickups,
+                    particles=self.particles,
+                    afterimages=self.afterimages,
+                    lightning_bolts=self.lightning_bolts,
+                    shockwaves=self.shockwaves,
+                    floating_texts=self.floating_texts,
+                    score=self.score,
+                    high_score=self.hs_data.get("high_score", 0),
+                    time_sec=self.time_sec,
+                    banner_text=self.banner_text,
+                    banner_timer=self.banner_timer,
+                    toast_text=self.toast_text,
+                    toast_timer=self.toast_timer,
+                    music_on=self.is_music_on,
+                )
+            self.renderer.render_codex_overlay()
         elif self.state in ("PLAYING", "LEVEL_UP", "PAUSED", "GAME_OVER", "VICTORY"):
             assert self.dungeon is not None
             assert self.player is not None
@@ -983,6 +1121,7 @@ class Game:
                 banner_timer=self.banner_timer,
                 toast_text=self.toast_text,
                 toast_timer=self.toast_timer,
+                music_on=self.is_music_on,
             )
             if self.state == "LEVEL_UP":
                 self.renderer.render_relic_selection(
@@ -991,7 +1130,9 @@ class Game:
                     self.player.level,
                 )
             elif self.state == "PAUSED":
-                self.renderer.render_pause_overlay(self.pause_index)
+                self.renderer.render_pause_overlay(
+                    self.pause_index, music_on=self.is_music_on
+                )
             elif self.state == "GAME_OVER":
                 self.renderer.render_end_screen(
                     victory=False,
@@ -999,6 +1140,7 @@ class Game:
                     floor_num=self.floor_num,
                     player_level=self.player.level,
                     kills=self.run_kills,
+                    bosses_slain=self.run_bosses_slain,
                     hs_data=self.hs_data,
                 )
             elif self.state == "VICTORY":
@@ -1008,6 +1150,7 @@ class Game:
                     floor_num=self.floor_num,
                     player_level=self.player.level,
                     kills=self.run_kills,
+                    bosses_slain=self.run_bosses_slain,
                     hs_data=self.hs_data,
                 )
 
@@ -1033,19 +1176,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--smoke-test",
         action="store_true",
-        help="Run automated simulation across menu, floors 1-5, abilities, relics, and highscore saving",
+        help="Run automated simulation across menu, codex, all 5 biomes & 5 bosses, abilities, shrines, and BGM",
     )
     return parser.parse_args()
 
 
 def run_smoke_test() -> int:
-    """Automated verification of menu, dungeon generation, all 4 abilities, relic level-ups, 3 enemy types, boss floor 5, and high score persistence."""
+    """Automated verification of menu, codex, 5 biomes, 5 unique bosses, 4 abilities, shrines, BGM tracks, and highscore saving."""
     game = Game(seed=42)
+    game.render()
+    # Verify Codex rendering from Menu
+    game.state = "CODEX"
     game.render()
     game.start_new_run()
     for floor in range(1, BOSS_FLOOR + 1):
         game._load_floor(floor)
         assert game.player is not None
+        assert game.dungeon is not None
+        # Ensure each floor spawns its unique Guardian Boss
+        bosses = [e for e in game.enemies if e.is_boss]
+        assert len(bosses) == 1, f"Floor {floor} missing guardian boss!"
         game.player.start_attack(0.5)
         game._trigger_dash()
         game._trigger_whirlwind()

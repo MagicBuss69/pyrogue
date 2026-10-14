@@ -1,4 +1,4 @@
-"""Player, Abilities, Relics, Enemies, Boss, Projectiles, Pickups, and Visual FX."""
+"""Player, Abilities, Relics, 3 Standard Enemies, 5 Unique Biome Bosses, Projectiles, Pickups, and Visual FX."""
 
 from dataclasses import dataclass, field
 import math
@@ -44,6 +44,14 @@ from settings import (
     PLAYER_SPEED,
     TILE_SIZE,
 )
+
+BOSS_TYPES = {
+    "boss_broodmother",
+    "boss_inquisitor",
+    "boss_behemoth",
+    "boss_wyrm",
+    "boss",
+}
 
 
 def angle_diff(a: float, b: float) -> float:
@@ -145,7 +153,7 @@ class FloatingText:
 
 @dataclass
 class Projectile:
-    """Ranged orb or lance fired by either the Player (Eldritch Nova) or Enemies/Boss."""
+    """Ranged orb or lance fired by either the Player (Eldritch Nova) or Enemies/Bosses."""
 
     x: float
     y: float
@@ -201,16 +209,17 @@ class Player:
         self.ability_power_mult: float = 1.0
         self.cooldown_Multiplier: float = 1.0
         self.vampiric_heal: int = 0
+        self.cinder_dash: bool = False
 
         # Progression / Level / Relics
         self.level: int = 1
         self.xp: int = 0
-        self.xp_to_next: int = 100
+        self.xp_to_next: int = 95
         self.relics: List[str] = []
 
         # Facing & Smart Aim
         self.facing_angle: float = 0.0
-        self.aim_mode: str = "AUTO"  # "AUTO", "KEYS", "MOUSE"
+        self.aim_mode: str = "AUTO"  # "AUTO", "KEYS", "MOVE", "MOUSE"
 
         # Primary 3-step Sword Combo
         self.attack_timer: float = 0.0
@@ -267,17 +276,22 @@ class Player:
         self.relics.append(relic_id)
         if relic_id == "vampiric_edge":
             self.damage = int(self.damage * 1.22)
-            self.vampiric_heal += 4
+            self.vampiric_heal += 5
         elif relic_id == "storm_capacitor":
             self.cooldown_Multiplier *= 0.75
         elif relic_id == "titan_heart":
-            self.max_hp += 35
-            self.heal(45)
+            self.max_hp += 40
+            self.heal(50)
         elif relic_id == "quicksilver_boots":
             self.speed *= 1.18
-            self.crit_chance = min(0.75, self.crit_chance + 0.15)
+            self.crit_chance = min(0.80, self.crit_chance + 0.15)
         elif relic_id == "arcane_overload":
             self.ability_power_mult *= 1.35
+        elif relic_id == "phoenix_aegis":
+            self.max_hp += 25
+            self.heal(35)
+            self.damage = int(self.damage * 1.15)
+            self.cinder_dash = True
 
     def gain_xp(self, amount: int) -> bool:
         """Add XP and return True if the player leveled up."""
@@ -285,10 +299,10 @@ class Player:
         if self.xp >= self.xp_to_next:
             self.xp -= self.xp_to_next
             self.level += 1
-            self.xp_to_next = int(self.xp_to_next * 1.35)
-            self.max_hp += 10
+            self.xp_to_next = int(self.xp_to_next * 1.32)
+            self.max_hp += 12
             self.damage += 3
-            self.heal(20)
+            self.heal(25)
             return True
         return False
 
@@ -309,14 +323,13 @@ class Player:
         else:
             self.combo_step = 0
 
-        self.combo_reset_timer = 0.65
+        self.combo_reset_timer = 0.68
         self.attack_timer = PLAYER_ATTACK_DURATION
         self.attack_cooldown = PLAYER_ATTACK_COOLDOWN * self.cooldown_Multiplier
         self.attack_swing_dir *= -1
         self.hit_targets_this_swing.clear()
 
-        # Small forward combat lunge on slash for snappy game feel
-        lunge = 110.0 if self.combo_step < 2 else 175.0
+        lunge = 115.0 if self.combo_step < 2 else 185.0
         self.knockback_vx += math.cos(self.attack_angle) * lunge
         self.knockback_vy += math.sin(self.attack_angle) * lunge
         return True
@@ -334,7 +347,7 @@ class Player:
             self.facing_angle = math.atan2(self.dash_dy, self.dash_dx)
         self.dash_timer = PLAYER_DASH_DURATION
         self.dash_cooldown = PLAYER_DASH_COOLDOWN * self.cooldown_Multiplier
-        self.invuln_timer = max(self.invuln_timer, PLAYER_DASH_DURATION + 0.08)
+        self.invuln_timer = max(self.invuln_timer, PLAYER_DASH_DURATION + 0.09)
         self.dash_hit_ids.clear()
         return True
 
@@ -345,7 +358,7 @@ class Player:
         self.whirlwind_timer = ABILITY_WHIRLWIND_DURATION
         self.whirlwind_cooldown = ABILITY_WHIRLWIND_COOLDOWN * self.cooldown_Multiplier
         self.whirlwind_hit_ids.clear()
-        self.invuln_timer = max(self.invuln_timer, 0.20)
+        self.invuln_timer = max(self.invuln_timer, 0.22)
         return True
 
     def cast_eldritch_nova(self) -> List[Projectile]:
@@ -366,7 +379,7 @@ class Player:
                     damage=dmg,
                     radius=8.5,
                     color=COLOR_ABILITY_NOVA,
-                    lifetime=1.4,
+                    lifetime=1.45,
                     from_player=True,
                     piercing=True,
                 )
@@ -441,12 +454,13 @@ class Player:
         if self.is_dashing or self.is_whirlwinding:
             self.afterimage_spawn_timer -= dt
             if self.afterimage_spawn_timer <= 0.0:
-                self.afterimage_spawn_timer = 0.032
+                self.afterimage_spawn_timer = 0.030
+                g_col = (255, 140, 50) if self.cinder_dash else COLOR_PLAYER
                 spawned_ghost = DashAfterimage(
                     x=self.x,
                     y=self.y,
                     radius=self.radius,
-                    color=COLOR_PLAYER,
+                    color=g_col,
                 )
 
         if self.is_dashing:
@@ -478,7 +492,7 @@ class Player:
 
 @dataclass
 class EnemyActionEvents:
-    """Events emitted by an enemy during its AI update."""
+    """Events emitted by an enemy or boss during its AI update."""
 
     projectiles: List[Projectile] = field(default_factory=list)
     spawned_minions: List["Enemy"] = field(default_factory=list)
@@ -486,7 +500,7 @@ class EnemyActionEvents:
 
 
 class Enemy:
-    """Base enemy class supporting 3 distinct enemy types plus the Floor 5 Boss."""
+    """Supports 3 standard enemy archetypes plus 5 distinct Biome Bosses (Floors 1-5)."""
 
     _next_id: int = 1
 
@@ -511,13 +525,15 @@ class Enemy:
         self.knockback_vy: float = 0.0
         self.hurt_flash_timer: float = 0.0
         self.anim_timer: float = random.uniform(0.0, 6.28)
-        self.ai_timer: float = random.uniform(0.2, 0.9)
+        self.ai_timer: float = random.uniform(0.3, 0.9)
         self.state: str = "idle"
         self.state_timer: float = 0.0
         self.charge_dx: float = 0.0
         self.charge_dy: float = 0.0
         self.boss_phase: int = 1
         self.attack_sequence: int = 0
+        self.subtitle: str = ""
+        self.achievement_id: Optional[str] = None
 
         scale = 1.0 + 0.14 * (floor_num - 1)
 
@@ -530,7 +546,8 @@ class Enemy:
             self.score_value = 50 * floor_num
             self.xp_value = 26
             self.color = COLOR_SLIME
-            self.aggro_range = 350.0
+            self.aggro_range = 360.0
+
         elif enemy_type == "cultist":
             self.name = "Void Cultist"
             self.radius = 15.0
@@ -540,28 +557,92 @@ class Enemy:
             self.score_value = 80 * floor_num
             self.xp_value = 34
             self.color = COLOR_CULTIST
-            self.aggro_range = 440.0
+            self.aggro_range = 450.0
+
         elif enemy_type == "brute":
             self.name = "Bone Juggernaut"
             self.radius = 20.0
             self.max_hp = int(76 * scale)
             self.damage = int(18 + 3 * (floor_num - 1))
-            self.speed = 95.0
+            self.speed = 96.0
             self.score_value = 120 * floor_num
             self.xp_value = 48
             self.color = COLOR_BRUTE
-            self.aggro_range = 380.0
+            self.aggro_range = 390.0
+
+        # ====================================================================
+        # 5 UNIQUE FLOOR BOSSES (4 New Area Guardians + Malakor on Floor 5)
+        # ====================================================================
+        elif enemy_type == "boss_broodmother":
+            self.name = "Broodmother Vexis"
+            self.subtitle = "Matriarch of the Venom Hive"
+            self.radius = 26.0
+            self.max_hp = 260
+            self.damage = 16
+            self.speed = 115.0
+            self.score_value = 800
+            self.xp_value = 120
+            self.color = (65, 245, 120)
+            self.aggro_range = 560.0
+            self.ai_timer = 1.2
+            self.achievement_id = "hive_breaker"
+
+        elif enemy_type == "boss_inquisitor":
+            self.name = "High Inquisitor Vaelen"
+            self.subtitle = "Arch-Prelate of the Astral Choir"
+            self.radius = 25.0
+            self.max_hp = 340
+            self.damage = 18
+            self.speed = 132.0
+            self.score_value = 1200
+            self.xp_value = 150
+            self.color = (215, 80, 255)
+            self.aggro_range = 600.0
+            self.ai_timer = 1.15
+            self.achievement_id = "silence_choir"
+
+        elif enemy_type == "boss_behemoth":
+            self.name = "Kragor, the Rime Colossus"
+            self.subtitle = "Shatterer of the Frozen Throne"
+            self.radius = 29.0
+            self.max_hp = 440
+            self.damage = 22
+            self.speed = 108.0
+            self.score_value = 1600
+            self.xp_value = 180
+            self.color = (80, 220, 255)
+            self.aggro_range = 600.0
+            self.ai_timer = 1.2
+            self.achievement_id = "frost_shatter"
+
+        elif enemy_type == "boss_wyrm":
+            self.name = "Ignis, the Cinder Drake"
+            self.subtitle = "Sovereign of the Magma Vents"
+            self.radius = 28.0
+            self.max_hp = 520
+            self.damage = 23
+            self.speed = 138.0
+            self.score_value = 2200
+            self.xp_value = 210
+            self.color = (255, 110, 40)
+            self.aggro_range = 640.0
+            self.ai_timer = 1.1
+            self.achievement_id = "wyrm_slayer"
+
         elif enemy_type == "boss":
             self.name = "Malakor, the Obsidian King"
-            self.radius = 30.0
-            self.max_hp = 600
-            self.damage = 24
-            self.speed = 118.0
-            self.score_value = 3000
-            self.xp_value = 250
+            self.subtitle = "Monarch of the Eternal Abyss"
+            self.radius = 32.0
+            self.max_hp = 680
+            self.damage = 25
+            self.speed = 122.0
+            self.score_value = 3500
+            self.xp_value = 300
             self.color = COLOR_BOSS
-            self.aggro_range = 720.0
-            self.ai_timer = 1.3
+            self.aggro_range = 740.0
+            self.ai_timer = 1.2
+            self.achievement_id = "kingslayer"
+
         else:
             raise ValueError(f"Unknown enemy type: {enemy_type}")
 
@@ -573,7 +654,7 @@ class Enemy:
 
     @property
     def is_boss(self) -> bool:
-        return self.enemy_type == "boss"
+        return self.enemy_type in BOSS_TYPES
 
     def take_damage(self, amount: int, source_x: float, source_y: float) -> int:
         if not self.alive:
@@ -611,8 +692,16 @@ class Enemy:
             vx, vy = self._update_cultist(dt, dx, dy, dist, dungeon, events)
         elif self.enemy_type == "brute":
             vx, vy = self._update_brute(dt, dx, dy, dist, dungeon)
+        elif self.enemy_type == "boss_broodmother":
+            vx, vy = self._update_boss_broodmother(dt, dx, dy, dist, dungeon, events)
+        elif self.enemy_type == "boss_inquisitor":
+            vx, vy = self._update_boss_inquisitor(dt, dx, dy, dist, dungeon, events)
+        elif self.enemy_type == "boss_behemoth":
+            vx, vy = self._update_boss_behemoth(dt, dx, dy, dist, dungeon, events)
+        elif self.enemy_type == "boss_wyrm":
+            vx, vy = self._update_boss_wyrm(dt, dx, dy, dist, dungeon, events)
         elif self.enemy_type == "boss":
-            vx, vy = self._update_boss(dt, dx, dy, dist, dungeon, events)
+            vx, vy = self._update_boss_malakor(dt, dx, dy, dist, dungeon, events)
 
         vx += self.knockback_vx
         vy += self.knockback_vy
@@ -624,7 +713,8 @@ class Enemy:
         )
         if hit_wall and self.state == "charging":
             self.state = "cooldown"
-            self.state_timer = 0.55
+            self.state_timer = 0.50
+            events.shockwave = True
 
         return events
 
@@ -759,7 +849,364 @@ class Enemy:
         self.state = "idle"
         return (0.0, 0.0)
 
-    def _update_boss(
+    # ------------------------------------------------------------------------
+    # BOSS 1: BROODMOTHER VEXIS (Floor 1 — Acid Globules, Leap Slam & Hatchlings)
+    # ------------------------------------------------------------------------
+    def _update_boss_broodmother(
+        self,
+        dt: float,
+        dx: float,
+        dy: float,
+        dist: float,
+        dungeon: Dungeon,
+        events: EnemyActionEvents,
+    ) -> Tuple[float, float]:
+        if self.hp <= self.max_hp * 0.5:
+            self.boss_phase = 2
+        if dist > self.aggro_range:
+            return (0.0, 0.0)
+
+        nx = dx / dist if dist > 0.01 else 1.0
+        ny = dy / dist if dist > 0.01 else 0.0
+        pm = 1.25 if self.boss_phase == 2 else 1.0
+
+        self.state_timer -= dt
+        if self.state == "charging":
+            if self.state_timer <= 0.0:
+                self.state = "idle"
+                events.shockwave = True
+                # Acid burst on landing
+                for i in range(8):
+                    ang = (2 * math.pi * i) / 8
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x,
+                            y=self.y,
+                            vx=math.cos(ang) * 210.0,
+                            vy=math.sin(ang) * 210.0,
+                            damage=13,
+                            radius=7.5,
+                            color=(95, 255, 130),
+                        )
+                    )
+                return (0.0, 0.0)
+            return (self.charge_dx * self.speed * 2.8 * pm, self.charge_dy * self.speed * 2.8 * pm)
+
+        if self.state == "windup":
+            if self.state_timer <= 0.0:
+                self.state = "charging"
+                self.state_timer = 0.44
+            return (0.0, 0.0)
+
+        self.ai_timer -= dt
+        if self.ai_timer <= 0.0:
+            pat = self.attack_sequence % 3
+            self.attack_sequence += 1
+            if pat == 0:
+                # Venomous 5-globule fan
+                base = math.atan2(dy, dx)
+                for i in range(5):
+                    ang = base + (i - 2) * 0.22
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x + math.cos(ang) * 24,
+                            y=self.y + math.sin(ang) * 24,
+                            vx=math.cos(ang) * 245.0,
+                            vy=math.sin(ang) * 245.0,
+                            damage=14,
+                            radius=7.5,
+                            color=(120, 255, 105),
+                        )
+                    )
+                self.ai_timer = 1.5 / pm
+            elif pat == 1:
+                self.state = "windup"
+                self.state_timer = 0.48
+                self.charge_dx, self.charge_dy = nx, ny
+                self.ai_timer = 1.6 / pm
+                return (0.0, 0.0)
+            else:
+                # Spawn a slime hatchling
+                ang = random.uniform(0, 6.28)
+                sx = self.x + math.cos(ang) * 48.0
+                sy = self.y + math.sin(ang) * 48.0
+                if not dungeon.circle_collides_walls(sx, sy, 15.0):
+                    events.spawned_minions.append(
+                        Enemy("slime", sx, sy, floor_num=1, room_index=self.room_index)
+                    )
+                self.ai_timer = 1.8 / pm
+
+        return (nx * self.speed * pm, ny * self.speed * pm)
+
+    # ------------------------------------------------------------------------
+    # BOSS 2: HIGH INQUISITOR VAELEN (Floor 2 — Astral Spiral, Blink & Cross Beams)
+    # ------------------------------------------------------------------------
+    def _update_boss_inquisitor(
+        self,
+        dt: float,
+        dx: float,
+        dy: float,
+        dist: float,
+        dungeon: Dungeon,
+        events: EnemyActionEvents,
+    ) -> Tuple[float, float]:
+        if self.hp <= self.max_hp * 0.5:
+            self.boss_phase = 2
+        if dist > self.aggro_range:
+            return (0.0, 0.0)
+
+        nx = dx / dist if dist > 0.01 else 1.0
+        ny = dy / dist if dist > 0.01 else 0.0
+        pm = 1.25 if self.boss_phase == 2 else 1.0
+
+        # Strafe orbit around player
+        strafe_vx = -ny * self.speed * 0.85 * pm
+        strafe_vy = nx * self.speed * 0.85 * pm
+        if dist > 230.0:
+            strafe_vx += nx * self.speed * 0.65
+            strafe_vy += ny * self.speed * 0.65
+        elif dist < 130.0:
+            strafe_vx -= nx * self.speed * 0.75
+            strafe_vy -= ny * self.speed * 0.75
+
+        self.ai_timer -= dt
+        if self.ai_timer <= 0.0:
+            pat = self.attack_sequence % 3
+            self.attack_sequence += 1
+            if pat == 0:
+                # Twin-spiral astral orb burst
+                count = 10 if self.boss_phase == 1 else 14
+                for i in range(count):
+                    ang = self.anim_timer + (2 * math.pi * i) / count
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x,
+                            y=self.y,
+                            vx=math.cos(ang) * 235.0,
+                            vy=math.sin(ang) * 235.0,
+                            damage=16,
+                            radius=7.0,
+                            color=(220, 90, 255),
+                        )
+                    )
+                self.ai_timer = 1.45 / pm
+            elif pat == 1:
+                # Precision aimed lance salvo
+                base = math.atan2(dy, dx)
+                for i in range(4):
+                    ang = base + (i - 1.5) * 0.14
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x + math.cos(ang) * 24,
+                            y=self.y + math.sin(ang) * 24,
+                            vx=math.cos(ang) * 320.0,
+                            vy=math.sin(ang) * 320.0,
+                            damage=17,
+                            radius=7.5,
+                            color=(95, 235, 255),
+                        )
+                    )
+                self.ai_timer = 1.35 / pm
+            else:
+                # Astral Teleport step + shockwave
+                step_ang = random.uniform(0, 6.28)
+                tx = self.x + math.cos(step_ang) * 110.0
+                ty = self.y + math.sin(step_ang) * 110.0
+                if not dungeon.circle_collides_walls(tx, ty, self.radius):
+                    self.x, self.y = tx, ty
+                    events.shockwave = True
+                self.ai_timer = 1.50 / pm
+
+        return (strafe_vx, strafe_vy)
+
+    # ------------------------------------------------------------------------
+    # BOSS 3: KRAGOR, THE RIME COLOSSUS (Floor 3 — Avalanche Rush & Ice Shards)
+    # ------------------------------------------------------------------------
+    def _update_boss_behemoth(
+        self,
+        dt: float,
+        dx: float,
+        dy: float,
+        dist: float,
+        dungeon: Dungeon,
+        events: EnemyActionEvents,
+    ) -> Tuple[float, float]:
+        if self.hp <= self.max_hp * 0.5:
+            self.boss_phase = 2
+        if dist > self.aggro_range:
+            return (0.0, 0.0)
+
+        nx = dx / dist if dist > 0.01 else 1.0
+        ny = dy / dist if dist > 0.01 else 0.0
+        pm = 1.25 if self.boss_phase == 2 else 1.0
+
+        self.state_timer -= dt
+        if self.state == "charging":
+            if self.state_timer <= 0.0:
+                self.state = "cooldown"
+                self.state_timer = 0.40
+                events.shockwave = True
+                # Shatter ring of glacial spikes
+                shards = 10 if self.boss_phase == 1 else 14
+                for i in range(shards):
+                    ang = (2 * math.pi * i) / shards
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x,
+                            y=self.y,
+                            vx=math.cos(ang) * 250.0,
+                            vy=math.sin(ang) * 250.0,
+                            damage=19,
+                            radius=8.0,
+                            color=(105, 235, 255),
+                        )
+                    )
+                return (0.0, 0.0)
+            return (self.charge_dx * self.speed * 3.3 * pm, self.charge_dy * self.speed * 3.3 * pm)
+
+        if self.state == "windup":
+            if self.state_timer <= 0.0:
+                self.state = "charging"
+                self.state_timer = 0.54
+            return (0.0, 0.0)
+
+        if self.state == "cooldown":
+            if self.state_timer <= 0.0:
+                self.state = "idle"
+            return (0.0, 0.0)
+
+        self.ai_timer -= dt
+        if self.ai_timer <= 0.0:
+            if self.attack_sequence % 2 == 0:
+                self.state = "windup"
+                self.state_timer = 0.52 / pm
+                self.charge_dx, self.charge_dy = nx, ny
+                self.attack_sequence += 1
+                self.ai_timer = 1.6 / pm
+                return (0.0, 0.0)
+            else:
+                # Frost cone barrage
+                base = math.atan2(dy, dx)
+                for i in range(6):
+                    ang = base + (i - 2.5) * 0.20
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x + math.cos(ang) * 26,
+                            y=self.y + math.sin(ang) * 26,
+                            vx=math.cos(ang) * 270.0,
+                            vy=math.sin(ang) * 270.0,
+                            damage=18,
+                            radius=8.0,
+                            color=(175, 245, 255),
+                        )
+                    )
+                self.attack_sequence += 1
+                self.ai_timer = 1.5 / pm
+
+        return (nx * self.speed * pm, ny * self.speed * pm)
+
+    # ------------------------------------------------------------------------
+    # BOSS 4: IGNIS, THE CINDER DRAKE (Floor 4 — Dragon Breath Stream & Meteor Ring)
+    # ------------------------------------------------------------------------
+    def _update_boss_wyrm(
+        self,
+        dt: float,
+        dx: float,
+        dy: float,
+        dist: float,
+        dungeon: Dungeon,
+        events: EnemyActionEvents,
+    ) -> Tuple[float, float]:
+        if self.hp <= self.max_hp * 0.5:
+            self.boss_phase = 2
+        if dist > self.aggro_range:
+            return (0.0, 0.0)
+
+        nx = dx / dist if dist > 0.01 else 1.0
+        ny = dy / dist if dist > 0.01 else 0.0
+        pm = 1.28 if self.boss_phase == 2 else 1.0
+
+        self.state_timer -= dt
+        if self.state == "charging":
+            if self.state_timer <= 0.0:
+                self.state = "idle"
+                events.shockwave = True
+                return (0.0, 0.0)
+            # Emit trailing fireballs while dashing!
+            if random.random() < 0.35:
+                perp_ang = math.atan2(self.charge_dy, self.charge_dx) + math.pi * 0.5
+                for side in (-1, 1):
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x,
+                            y=self.y,
+                            vx=math.cos(perp_ang) * side * 190.0,
+                            vy=math.sin(perp_ang) * side * 190.0,
+                            damage=18,
+                            radius=7.0,
+                            color=(255, 130, 40),
+                        )
+                    )
+            return (self.charge_dx * self.speed * 3.1 * pm, self.charge_dy * self.speed * 3.1 * pm)
+
+        if self.state == "windup":
+            if self.state_timer <= 0.0:
+                self.state = "charging"
+                self.state_timer = 0.52
+            return (0.0, 0.0)
+
+        self.ai_timer -= dt
+        if self.ai_timer <= 0.0:
+            pat = self.attack_sequence % 3
+            self.attack_sequence += 1
+            if pat == 0:
+                # Flamethrower cone volley
+                base = math.atan2(dy, dx)
+                for i in range(7):
+                    ang = base + (i - 3) * 0.15
+                    spd = 260.0 + (i % 2) * 45.0
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x + math.cos(ang) * 26,
+                            y=self.y + math.sin(ang) * 26,
+                            vx=math.cos(ang) * spd,
+                            vy=math.sin(ang) * spd,
+                            damage=20,
+                            radius=8.0,
+                            color=(255, 150, 45),
+                        )
+                    )
+                self.ai_timer = 1.35 / pm
+            elif pat == 1:
+                self.state = "windup"
+                self.state_timer = 0.46 / pm
+                self.charge_dx, self.charge_dy = nx, ny
+                self.ai_timer = 1.5 / pm
+                return (0.0, 0.0)
+            else:
+                # Molten supernova ring
+                count = 12 if self.boss_phase == 1 else 16
+                for i in range(count):
+                    ang = self.anim_timer + (2 * math.pi * i) / count
+                    events.projectiles.append(
+                        Projectile(
+                            x=self.x,
+                            y=self.y,
+                            vx=math.cos(ang) * 230.0,
+                            vy=math.sin(ang) * 230.0,
+                            damage=19,
+                            radius=7.5,
+                            color=(255, 200, 65),
+                        )
+                    )
+                self.ai_timer = 1.55 / pm
+
+        return (nx * self.speed * pm, ny * self.speed * pm)
+
+    # ------------------------------------------------------------------------
+    # BOSS 5: MALAKOR, THE OBSIDIAN KING (Floor 5 Final Boss)
+    # ------------------------------------------------------------------------
+    def _update_boss_malakor(
         self,
         dt: float,
         dx: float,

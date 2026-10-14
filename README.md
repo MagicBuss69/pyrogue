@@ -1,57 +1,47 @@
-# Crypts of the Obsidian King — Steam Edition (v2.0)
+# Crypts of the Obsidian King — Complete Steam Edition (v3.0 GOLD)
 
-A complete, Steam-ready 2D action roguelike built in Python with `pygame`. Descend 5 procedural floors of the Obsidian Crypts, unleash 4 arcane abilities, collect powerful Relics on level-up, unlock Steam-style achievements, and vanquish **Malakor, the Obsidian King** on Floor 5.
+An action roguelike built in Python with `pygame`, featuring **5 distinct Biome Realms**, **5 unique Floor Guardian Bosses**, **6 procedural synthwave Background Music (BGM) tracks**, **multi-layered harmonic SFX**, **4 active abilities**, **interactive Arcane Shrines**, **6 Level-Up Relics**, **8 Steam-style achievements**, and **full keyboard/twin-stick/mouse aiming** (no mouse required).
 
-## What's New in v2.0 (Steam Launch Overhaul)
+---
 
-- **Fixed Mouse & Aiming (Zero Mouse Required!)**:
-  - The window never traps or grabs your cursor (`pygame.event.set_grab(False)`).
-  - **Smart Multi-Modal Aiming**:
-    1. **Twin-Stick Arrow Keys**: Press or hold the **Arrow Keys** to aim in any 8-way direction while moving with `WASD`.
-    2. **Auto-Target Assist**: Automatically locks onto the nearest monster in melee/mid range so attacks always land cleanly without touching the mouse.
-    3. **Movement Aiming**: Faces the direction you move when no enemies are nearby.
-    4. **Optional Mouse Aiming**: Only aims toward the mouse cursor when you actively move the mouse.
-- **Unique "Obsidian Neon-Noir" Art Style**:
-  - 2.5D chiseled obsidian brickwork with bevels, mortar lines, carved glowing runes, and northern wall drop-shadows.
-  - Dynamic additive radial lighting on flickering wall sconces/torches, projectiles, stairs, and characters, framed by an atmospheric vignette.
-  - Flowing animated cape physics, glowing arcane visor eyes, idle rune-blade rendering, dash afterimages, jagged lightning bolts, and destructible wooden crates.
-- **4 Active Player Abilities + 3-Hit Sword Combo**:
-  - **Primary Attack (`J` / `SPACE` / Left-Click)**: 3-step crescent blade combo with forward combat lunge; the 3rd hit is a wide golden critical finisher. Deflects enemy projectiles!
-  - **Whirlwind Cleave (`Q` / `1` / `U`)**: 360° spinning blade storm that damages all surrounding enemies and shatters incoming projectiles.
-  - **Eldritch Nova (`E` / `2` / `I`)**: Fires a ring of 8 piercing arcane lances outward in all directions.
-  - **Chain Lightning (`R` / `3` / `O`)**: Calls down high-voltage arcs that jump between up to 4 nearby monsters.
-  - **Phantom Dash (`SHIFT` / `K` / Right-Click)**: High-speed invulnerable phase-dash that leaves glowing afterimages and damages enemies you pass through.
-- **XP, Level-Up Relic Drafts & Steam Achievements**:
-  - Slaying monsters grants XP; leveling up pauses the action to let you draft 1 of 3 **Obsidian Relics** (*Vampiric Obsidian Edge*, *Astral Storm Capacitor*, *Heart of the Colossus*, *Quicksilver Greaves*, *Eldritch Overload Core*).
-  - 5 built-in **Steam Achievements** with live in-game unlock toasts and persistence in `highscore.json`.
-  - Procedural in-memory retro synth sound effects (`audio.py`) with automatic silent fallback if no audio device is present.
-
-## Project Structure
-
-- `main.py` — Game loop, multi-modal smart aiming, ability execution, combat collision, Relic draft, Pause menu, and state machine.
-- `settings.py` — Obsidian Neon-Noir palette, ability tuning, Relic catalog, and Achievement definitions.
-- `dungeon.py` — Procedural room & corridor generator, wall torches, breakable crates, blood/rune floor decals, and Floor 5 Boss Sanctum.
-- `entities.py` — `Player`, `Enemy` (Venom Slime, Void Cultist, Bone Juggernaut, and Malakor Boss), `Projectile`, `HealthPickup`, `DashAfterimage`, `LightningBoltFX`, and `ShockwaveRingFX`.
-- `ui.py` — 2.5D tile & lighting renderer, ability cooldown hotbar, XP/HP HUD, minimap, Relic selection modal, Pause screen, and Main Menu.
-- `audio.py` — Zero-dependency procedural sound synthesizer.
-- `highscore.py` — Persistent high score, career stats, and achievement storage (`highscore.json`).
-
-## How to Run
+## Quick Start
 
 ```bash
 pip install -r requirements.txt
-python3 main.py
+python main.py
 ```
 
-## Controls
+---
 
-| Action | Keyboard (No Mouse Needed) | Alternate / Mouse |
+## 5 Distinct Biomes & 5 Guardian Bosses
+
+Every floor has its own custom architectural stone/floor color palette, dynamic torch lighting, floating ambient particles, procedural background music track, and a **Floor Guardian Boss** protecting the Golden Portal Stairs:
+
+1. **Floor 1 — The Verdant Ossuary** (*Bioluminescent Spore Catacombs*)
+   - **Guardian Boss**: **Broodmother Vexis** (*Matriarch of the Venom Hive*) — 8-legged arachnid matriarch that fires 5-globule acid fans, performs venomous leap-slams with radial acid bursts, and spawns Venom Slime hatchlings.
+2. **Floor 2 — The Astral Archives** (*Forbidden Library of the Void Weavers*)
+   - **Guardian Boss**: **High Inquisitor Vaelen** (*Arch-Prelate of the Astral Choir*) — Floating astral seraph with orbiting grimoires that unleashes twin-spiral void novas, precision lance salvos, and phase-blink teleports.
+3. **Floor 3 — The Frostbound Citadel** (*Sub-Zero Rimeforged Bastion*)
+   - **Guardian Boss**: **Kragor, the Rime Colossus** (*Shatterer of the Frozen Throne*) — Crystalline ice colossus with avalanche charges, glacial shatter rings, and frost cone barrages.
+4. **Floor 4 — The Hellforge Foundry** (*Molten Crucible of Ash & Iron*)
+   - **Guardian Boss**: **Ignis, the Cinder Drake** (*Sovereign of the Magma Vents*) — Winged magma dragon that breathes cone firestreams, leaves perpendicular fireball trails mid-rush, and detonates molten supernova rings.
+5. **Floor 5 — The Obsidian Sanctum** (*Throne of the Undying Eclipse*)
+   - **Final Boss**: **Malakor, the Obsidian King** (*Monarch of the Eternal Abyss*) — 2-phase final boss with orbiting obsidian shards, fan volleys, meteor slams, radial novas, and abyssal summons.
+
+---
+
+## Controls (Zero Mouse Required)
+
+| Action | Primary Keys | Alternate Keys / Mouse |
 | :--- | :--- | :--- |
-| **Move** | `W` `A` `S` `D` | Arrow Keys |
-| **Aim Direction** | **Arrow Keys** or Auto-Target | Mouse Cursor |
-| **3-Hit Sword Combo** | `SPACE` or `J` | Left Mouse Button |
-| **Whirlwind Cleave (AoE)** | `Q` or `1` | `U` |
-| **Eldritch Nova (8 Lances)** | `E` or `2` | `I` |
-| **Chain Lightning** | `R` or `3` | `O` |
-| **Phantom Dash (Dodge)** | `Left Shift` / `Right Shift` | `K` or Right Click |
-| **Pause / Resume** | `ESC` or `P` | — |
+| **Move** | `W`, `A`, `S`, `D` | `Arrow Keys` (when not aiming) |
+| **Aim** | **Auto-Locks Nearest Enemy** | `Arrow Keys` (8-way) or `Mouse` |
+| **Primary Sword Combo** | `SPACE` or `J` | `Left Mouse Button` |
+| **Ability 1: Whirlwind Cleave** | `Q` or `1` | `U` |
+| **Ability 2: Eldritch Nova** | `E` or `2` | `I` |
+| **Ability 3: Chain Lightning** | `R` or `3` | `O` |
+| **Ability 4: Phantom Dash** | `SHIFT` or `K` | `Right Mouse Button` |
+| **Boss & Biome Codex** | `C` or `TAB` | View all 5 Areas & 5 Bosses anytime |
+| **Toggle Music / BGM** | `M` | Mute / Unmute procedural soundtrack |
+| **Adjust Audio Volume** | `-` / `+` | Decrease / Increase BGM & SFX volume |
+| **Pause Menu** | `ESC` or `P` | Resume / Codex / Music / Restart / Quit |

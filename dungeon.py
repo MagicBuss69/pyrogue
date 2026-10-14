@@ -1,4 +1,4 @@
-"""Procedural dungeon generator for floors 1-5 with torches, breakable crates, shrines, and decals."""
+"""Procedural dungeon generator for 5 Distinct Biomes, 5 Floor Boss Sanctums, Shrines, Crates, and Lighting."""
 
 from dataclasses import dataclass, field
 import math
@@ -15,6 +15,7 @@ from settings import (
     TILE_STAIRS_DOWN,
     TILE_VOID,
     TILE_WALL,
+    get_biome_theme,
 )
 
 
@@ -70,9 +71,9 @@ class Room:
 
 @dataclass
 class EnemySpawnSpec:
-    """Specification for an enemy to spawn on the floor."""
+    """Specification for an enemy or floor boss to spawn."""
 
-    enemy_type: str  # "slime", "cultist", "brute", "boss"
+    enemy_type: str
     x: float
     y: float
     room_index: int
@@ -89,12 +90,12 @@ class PickupSpawnSpec:
 
 @dataclass
 class TorchProp:
-    """Wall-mounted flickering torch emitting warm dynamic glow."""
+    """Wall-mounted flickering torch emitting dynamic biome-tinted glow."""
 
     x: float
     y: float
     phase: float = 0.0
-    color_variant: str = "amber"  # "amber", "arcane", "crimson"
+    color_variant: str = "biome"
 
 
 @dataclass
@@ -110,8 +111,20 @@ class BreakableCrate:
 
 
 @dataclass
+class ArcaneShrine:
+    """Interactive sanctuary altar that grants a blessing when approached or activated."""
+
+    x: float
+    y: float
+    shrine_type: str = "vitality"  # "vitality", "fury", "haste"
+    radius: float = 20.0
+    used: bool = False
+    anim_phase: float = 0.0
+
+
+@dataclass
 class FloorDecal:
-    """Persistent bloodstain, scorch mark, or arcane sigil on the dungeon floor."""
+    """Persistent bloodstain, scorch mark, frost crystal, or arcane sigil on the dungeon floor."""
 
     x: float
     y: float
@@ -122,7 +135,7 @@ class FloorDecal:
 
 @dataclass
 class Dungeon:
-    """Represents a generated dungeon floor with rooms, lighting props, and destructibles."""
+    """Represents a generated biome floor with rooms, boss sanctum, shrines, lighting, and destructibles."""
 
     floor_num: int
     width: int
@@ -137,6 +150,7 @@ class Dungeon:
     pickup_spawns: List[PickupSpawnSpec] = field(default_factory=list)
     torches: List[TorchProp] = field(default_factory=list)
     crates: List[BreakableCrate] = field(default_factory=list)
+    shrines: List[ArcaneShrine] = field(default_factory=list)
     decals: List[FloorDecal] = field(default_factory=list)
 
     def is_walkable(self, tx: int, ty: int) -> bool:
@@ -227,7 +241,7 @@ class Dungeon:
         radius: float = 14.0,
         kind: str = "splatter",
     ) -> None:
-        if len(self.decals) > 140:
+        if len(self.decals) > 160:
             self.decals.pop(0)
         self.decals.append(FloorDecal(x=x, y=y, radius=radius, color=color, kind=kind))
 
@@ -275,15 +289,19 @@ def _surround_floors_with_walls(grid: List[List[int]]) -> None:
 
 
 def _populate_room_props(
+    floor_num: int,
     rooms: List[Room],
     rng: random.Random,
     torches: List[TorchProp],
     crates: List[BreakableCrate],
+    shrines: List[ArcaneShrine],
     decals: List[FloorDecal],
 ) -> None:
+    biome = get_biome_theme(floor_num)
+    rune_color = biome["wall_rune"]
+
     for idx, room in enumerate(rooms):
-        variant = "crimson" if room.room_type == "boss" else ("arcane" if idx % 3 == 0 else "amber")
-        # Place corner torches
+        variant = "boss" if room.room_type in ("boss", "exit") else "biome"
         corners = [
             ((room.x + 0.5) * TILE_SIZE, (room.y + 0.35) * TILE_SIZE),
             ((room.right - 0.5) * TILE_SIZE, (room.y + 0.35) * TILE_SIZE),
@@ -300,50 +318,54 @@ def _populate_room_props(
                 TorchProp(x=tx, y=ty, phase=rng.uniform(0.0, 6.28), color_variant=variant)
             )
 
-        # Place arcane rune decal in start/exit/boss rooms
-        if room.room_type in ("start", "exit", "boss"):
+        if room.room_type in ("start", "exit", "boss", "shrine"):
             cx, cy = room.center_px
             decals.append(
                 FloorDecal(
                     x=cx,
                     y=cy,
-                    radius=TILE_SIZE * 1.15,
-                    color=(54, 44, 92) if room.room_type != "boss" else (95, 28, 52),
+                    radius=TILE_SIZE * (1.45 if room.room_type in ("boss", "exit") else 1.15),
+                    color=rune_color,
                     kind="rune",
                 )
             )
 
-        # Place breakable crates near room edges
-        if room.room_type != "start":
+        if room.room_type == "shrine":
+            cx, cy = room.center_px
+            s_type = rng.choice(["vitality", "fury", "haste"])
+            shrines.append(ArcaneShrine(x=cx, y=cy, shrine_type=s_type))
+
+        if room.room_type not in ("start", "shrine"):
             num_crates = rng.randint(1, 3)
             for _ in range(num_crates):
                 cx, cy = room.random_floor_pixel(rng, margin=1)
-                if math.hypot(cx - room.center_px[0], cy - room.center_px[1]) > TILE_SIZE:
+                if math.hypot(cx - room.center_px[0], cy - room.center_px[1]) > TILE_SIZE * 1.4:
                     crates.append(BreakableCrate(x=cx, y=cy))
 
 
 def generate_dungeon(
     floor_num: int, seed: Optional[int] = None
 ) -> Dungeon:
-    """Generate a procedural dungeon layout for the given floor."""
+    """Generate a procedural biome floor with its own Floor Guardian Boss and Sanctum."""
     rng = random.Random(seed)
     width = DUNGEON_WIDTH
     height = DUNGEON_HEIGHT
     grid = [[TILE_VOID for _ in range(width)] for _ in range(height)]
     explored = [[False for _ in range(width)] for _ in range(height)]
+    biome = get_biome_theme(floor_num)
 
     if floor_num >= BOSS_FLOOR:
-        return _generate_boss_floor(floor_num, width, height, grid, explored, rng)
+        return _generate_final_sanctum(floor_num, width, height, grid, explored, rng)
 
     rooms: List[Room] = []
     target_rooms = min(13, 7 + floor_num)
-    max_attempts = 160
+    max_attempts = 180
 
     for _ in range(max_attempts):
         if len(rooms) >= target_rooms:
             break
-        w = rng.randint(6, 11)
-        h = rng.randint(6, 10)
+        w = rng.randint(7, 11)
+        h = rng.randint(7, 10)
         x = rng.randint(3, width - w - 4)
         y = rng.randint(3, height - h - 4)
         candidate = Room(x=x, y=y, w=w, h=h)
@@ -353,12 +375,39 @@ def generate_dungeon(
         rooms.append(candidate)
 
     if len(rooms) < 4:
-        fallback_coords = [(4, 4, 8, 7), (20, 5, 9, 8), (35, 6, 8, 8), (22, 22, 10, 9)]
+        fallback_coords = [(4, 4, 8, 8), (20, 5, 10, 9), (36, 6, 10, 9), (22, 22, 12, 10)]
         for fx, fy, fw, fh in fallback_coords:
             candidate = Room(x=fx, y=fy, w=fw, h=fh)
             if not any(candidate.intersects(r, padding=1) for r in rooms):
                 _carve_room(grid, candidate)
                 rooms.append(candidate)
+
+    rooms[0].room_type = "start"
+    rooms[0].cleared = True
+
+    start_cx, start_cy = rooms[0].center_tile
+    exit_room_idx = max(
+        range(1, len(rooms)),
+        key=lambda idx: math.hypot(
+            rooms[idx].center_tile[0] - start_cx,
+            rooms[idx].center_tile[1] - start_cy,
+        ),
+    )
+
+    # Expand the exit room into a grand Floor Boss Sanctum
+    boss_room = rooms[exit_room_idx]
+    boss_room.room_type = "exit"
+    boss_room.x = max(3, min(width - 15, boss_room.x - 1))
+    boss_room.y = max(3, min(height - 14, boss_room.y - 1))
+    boss_room.w = max(boss_room.w, 11)
+    boss_room.h = max(boss_room.h, 10)
+    _carve_room(grid, boss_room)
+
+    # Designate one middle room as an Arcane Shrine Room
+    if len(rooms) >= 4:
+        shrine_candidates = [i for i in range(1, len(rooms)) if i != exit_room_idx]
+        if shrine_candidates:
+            rooms[shrine_candidates[0]].room_type = "shrine"
 
     for i in range(1, len(rooms)):
         cx1, cy1 = rooms[i - 1].center_tile
@@ -378,19 +427,7 @@ def generate_dungeon(
             _carve_h_corridor(grid, cx1, cx2, cy1)
             _carve_v_corridor(grid, cy1, cy2, cx2)
 
-    rooms[0].room_type = "start"
-    rooms[0].cleared = True
-
-    start_cx, start_cy = rooms[0].center_tile
-    exit_room_idx = max(
-        range(1, len(rooms)),
-        key=lambda idx: math.hypot(
-            rooms[idx].center_tile[0] - start_cx,
-            rooms[idx].center_tile[1] - start_cy,
-        ),
-    )
-    rooms[exit_room_idx].room_type = "exit"
-    stairs_tx, stairs_ty = rooms[exit_room_idx].center_tile
+    stairs_tx, stairs_ty = boss_room.center_tile
     grid[stairs_ty][stairs_tx] = TILE_STAIRS_DOWN
 
     _surround_floors_with_walls(grid)
@@ -399,22 +436,32 @@ def generate_dungeon(
     pickup_spawns: List[PickupSpawnSpec] = []
     torches: List[TorchProp] = []
     crates: List[BreakableCrate] = []
+    shrines: List[ArcaneShrine] = []
     decals: List[FloorDecal] = []
 
-    _populate_room_props(rooms, rng, torches, crates, decals)
+    _populate_room_props(floor_num, rooms, rng, torches, crates, shrines, decals)
+
+    # Spawn the Floor Guardian Boss inside the exit sanctum!
+    bx, by = boss_room.center_px
+    enemy_spawns.append(
+        EnemySpawnSpec(
+            enemy_type=biome["boss_type"],
+            x=bx,
+            y=by - TILE_SIZE * 1.2,
+            room_index=exit_room_idx,
+        )
+    )
 
     enemy_pool = _get_enemy_pool_for_floor(floor_num)
     for idx, room in enumerate(rooms):
-        if idx == 0:
+        if idx in (0, exit_room_idx):
             continue
 
         min_enemies = 2 if floor_num == 1 else 2 + (floor_num // 2)
         max_enemies = 3 + floor_num
         count = rng.randint(min_enemies, max_enemies)
 
-        placed_positions: List[Tuple[float, float]] = []
-        if idx == exit_room_idx:
-            placed_positions.append(room.center_px)
+        placed_positions: List[Tuple[float, float]] = [room.center_px]
 
         for _ in range(count):
             etype = rng.choice(enemy_pool)
@@ -427,7 +474,7 @@ def generate_dungeon(
                     )
                     break
 
-        if rng.random() < 0.50:
+        if rng.random() < 0.55:
             hx, hy = room.random_floor_pixel(rng, margin=1)
             pickup_spawns.append(PickupSpawnSpec(pickup_type="health", x=hx, y=hy))
 
@@ -436,6 +483,7 @@ def generate_dungeon(
         hx, hy = r.random_floor_pixel(rng, margin=1)
         pickup_spawns.append(PickupSpawnSpec(pickup_type="health", x=hx, y=hy))
 
+    # Stairs start locked until the Floor Boss is vanquished!
     dungeon = Dungeon(
         floor_num=floor_num,
         width=width,
@@ -445,18 +493,19 @@ def generate_dungeon(
         explored=explored,
         player_start=rooms[0].center_px,
         stairs_tile=(stairs_tx, stairs_ty),
-        stairs_unlocked=True,
+        stairs_unlocked=False,
         enemy_spawns=enemy_spawns,
         pickup_spawns=pickup_spawns,
         torches=torches,
         crates=crates,
+        shrines=shrines,
         decals=decals,
     )
     dungeon.reveal_around(*dungeon.player_start)
     return dungeon
 
 
-def _generate_boss_floor(
+def _generate_final_sanctum(
     floor_num: int,
     width: int,
     height: int,
@@ -464,7 +513,7 @@ def _generate_boss_floor(
     explored: List[List[bool]],
     rng: random.Random,
 ) -> Dungeon:
-    """Create the Floor 5 Obsidian Sanctum boss arena."""
+    """Create the Floor 5 Obsidian Sanctum boss arena for Malakor."""
     antechamber = Room(x=width // 2 - 4, y=height - 11, w=8, h=7, room_type="start", cleared=True)
     arena = Room(x=width // 2 - 11, y=6, w=22, h=18, room_type="boss")
 
@@ -508,8 +557,15 @@ def _generate_boss_floor(
     rooms = [antechamber, arena]
     torches: List[TorchProp] = []
     crates: List[BreakableCrate] = []
+    shrines: List[ArcaneShrine] = [
+        ArcaneShrine(
+            x=(antechamber.right - 1.5) * TILE_SIZE,
+            y=(antechamber.y + 1.5) * TILE_SIZE,
+            shrine_type="fury",
+        )
+    ]
     decals: List[FloorDecal] = []
-    _populate_room_props(rooms, rng, torches, crates, decals)
+    _populate_room_props(floor_num, rooms, rng, torches, crates, shrines, decals)
 
     dungeon = Dungeon(
         floor_num=floor_num,
@@ -525,6 +581,7 @@ def _generate_boss_floor(
         pickup_spawns=pickup_spawns,
         torches=torches,
         crates=crates,
+        shrines=shrines,
         decals=decals,
     )
     dungeon.reveal_around(*dungeon.player_start, radius_tiles=11)
@@ -536,7 +593,7 @@ def _get_enemy_pool_for_floor(floor_num: int) -> List[str]:
     if floor_num == 1:
         return ["slime", "slime", "slime", "cultist", "brute"]
     if floor_num == 2:
-        return ["slime", "slime", "cultist", "cultist", "brute"]
+        return ["slime", "cultist", "cultist", "cultist", "brute"]
     if floor_num == 3:
-        return ["slime", "cultist", "cultist", "brute", "brute"]
+        return ["slime", "cultist", "brute", "brute", "brute"]
     return ["slime", "cultist", "cultist", "brute", "brute", "brute"]
