@@ -1,35 +1,53 @@
-"""Main entry point and game state controller for Crypts of the Obsidian King."""
+"""Main entry point and Steam-Edition game state controller for Crypts of the Obsidian King."""
 
 import argparse
 import math
 import random
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pygame
 
+from audio import SoundManager
 from dungeon import Dungeon, generate_dungeon
 from entities import (
+    DashAfterimage,
     Enemy,
     FloatingText,
     HealthPickup,
+    LightningBoltFX,
     Particle,
     Player,
     Projectile,
+    ShockwaveRingFX,
     angle_diff,
 )
 from highscore import load_highscore_data, save_highscore_data
 from settings import (
+    ABILITY_LIGHTNING_CHAINS,
+    ABILITY_LIGHTNING_DAMAGE_MULT,
+    ABILITY_LIGHTNING_RANGE,
+    ABILITY_WHIRLWIND_DAMAGE_MULT,
+    ABILITY_WHIRLWIND_RADIUS,
+    ACHIEVEMENTS_CATALOG,
     BOSS_FLOOR,
+    COLOR_ABILITY_DASH,
+    COLOR_ABILITY_LIGHTNING,
+    COLOR_ABILITY_NOVA,
+    COLOR_ABILITY_WHIRLWIND,
+    COLOR_CRATE_WOOD,
     COLOR_GOLD,
     COLOR_HP_BAR,
     COLOR_PICKUP_HP,
-    COLOR_PLAYER,
+    COLOR_SWORD_CRIT,
     COLOR_SWORD_TRAIL,
     FPS,
     GAME_TITLE,
     PLAYER_ATTACK_ARC,
     PLAYER_ATTACK_RANGE,
+    PLAYER_DASH_DAMAGE,
+    RELIC_CATALOG,
+    SCORE_CRATE_BREAK,
     SCORE_FLOOR_CLEAR,
     SCORE_HEALTH_PICKUP,
     SCREEN_HEIGHT,
@@ -40,23 +58,38 @@ from ui import Renderer
 
 
 class Game:
-    """Top-level game state machine managing menu, active dungeon run, and game over."""
+    """Top-level game state machine managing menu, combat, abilities, relic level-ups, pause, and game over."""
 
     def __init__(self, seed: Optional[int] = None) -> None:
         pygame.init()
         self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
         pygame.display.set_caption(GAME_TITLE)
+        # Ensure the mouse cursor is never trapped or grabbed by the window
+        pygame.event.set_grab(False)
+        pygame.mouse.set_visible(True)
+
         self.clock = pygame.time.Clock()
         self.renderer = Renderer(self.screen)
+        self.sound = SoundManager()
 
         self.base_seed = seed
-        self.state: str = "MENU"  # "MENU", "PLAYING", "GAME_OVER", "VICTORY"
+        # States: "MENU", "PLAYING", "LEVEL_UP", "PAUSED", "GAME_OVER", "VICTORY"
+        self.state: str = "MENU"
         self.menu_index: int = 0
+        self.pause_index: int = 0
+        self.relic_choice_index: int = 0
+        self.relic_choices: List[Dict[str, Any]] = []
         self.time_sec: float = 0.0
+        self.hitstop_timer: float = 0.0
 
         self.hs_data: Dict[str, Any] = load_highscore_data()
         self.score: int = 0
         self.floor_num: int = 1
+        self.run_kills: int = 0
+        self.used_abilities_this_run: Set[str] = set()
+        self.unlocked_achievements: Set[str] = set(
+            self.hs_data.get("achievements", [])
+        )
 
         self.dungeon: Optional[Dungeon] = None
         self.player: Optional[Player] = None
@@ -64,14 +97,37 @@ class Game:
         self.projectiles: List[Projectile] = []
         self.pickups: List[HealthPickup] = []
         self.particles: List[Particle] = []
+        self.afterimages: List[DashAfterimage] = []
+        self.lightning_bolts: List[LightningBoltFX] = []
+        self.shockwaves: List[ShockwaveRingFX] = []
         self.floating_texts: List[FloatingText] = []
 
         self.banner_text: str = ""
         self.banner_timer: float = 0.0
+        self.toast_text: str = ""
+        self.toast_timer: float = 0.0
+
+        # Track last mouse position so stationary/unavailable mice never hijack aim
+        self.last_mouse_pos: Tuple[int, int] = pygame.mouse.get_pos()
+        self.mouse_active_timer: float = 0.0
+
+    def unlock_achievement(self, ach_id: str) -> None:
+        if ach_id in self.unlocked_achievements:
+            return
+        self.unlocked_achievements.add(ach_id)
+        ach_info = next(
+            (a for a in ACHIEVEMENTS_CATALOG if a["id"] == ach_id), None
+        )
+        if ach_info:
+            self.toast_text = f"{ach_info['name']} — {ach_info['desc']}"
+            self.toast_timer = 4.0
+            self.sound.play("levelup")
 
     def start_new_run(self) -> None:
         self.score = 0
         self.floor_num = 1
+        self.run_kills = 0
+        self.used_abilities_this_run.clear()
         self.player = Player(0.0, 0.0)
         self._load_floor(1)
         self.state = "PLAYING"
@@ -86,10 +142,13 @@ class Game:
         self.dungeon = generate_dungeon(floor_num, seed=floor_seed)
         assert self.player is not None
         self.player.x, self.player.y = self.dungeon.player_start
-        # Slight max HP & attack scaling per floor descended
         if floor_num > 1:
-            self.player.damage = 24 + (floor_num - 1) * 3
-            self.player.heal(15)
+            self.player.damage += 3
+            self.player.heal(20)
+            self.sound.play("stairs")
+
+        if floor_num >= BOSS_FLOOR:
+            self.unlock_achievement("deep_delver")
 
         self.enemies = [
             Enemy(
@@ -107,24 +166,27 @@ class Game:
         ]
         self.projectiles.clear()
         self.particles.clear()
+        self.afterimages.clear()
+        self.lightning_bolts.clear()
+        self.shockwaves.clear()
         self.floating_texts.clear()
 
         self.renderer.cam_x = self.player.x - SCREEN_WIDTH * 0.5
         self.renderer.cam_y = self.player.y - SCREEN_HEIGHT * 0.5
 
         if floor_num == BOSS_FLOOR:
-            self.banner_text = "FLOOR 5: OBSIDIAN SANCTUM — DEFEAT MALAKOR!"
+            self.banner_text = "FLOOR 5: OBSIDIAN SANCTUM — VANQUISH MALAKOR!"
         else:
-            self.banner_text = f"FLOOR {floor_num} — FIND THE STAIRS DOWN"
+            self.banner_text = f"FLOOR {floor_num} — DESCEND THE GOLDEN STAIRS"
         self.banner_timer = 3.2
 
     def _spawn_burst(
         self,
         x: float,
         y: float,
-        color: tuple[int, int, int],
+        color: Tuple[int, int, int],
         count: int = 10,
-        speed: float = 140.0,
+        speed: float = 150.0,
     ) -> None:
         for _ in range(count):
             ang = random.uniform(0.0, 2 * math.pi)
@@ -137,16 +199,50 @@ class Game:
                     vx=math.cos(ang) * spd,
                     vy=math.sin(ang) * spd,
                     color=color,
-                    size=random.uniform(3.0, 6.0),
+                    size=random.uniform(3.0, 6.5),
                     lifetime=lt,
                     max_lifetime=lt,
                 )
             )
 
+    def _offer_level_up_relics(self) -> None:
+        assert self.player is not None
+        self.relic_choices = random.sample(
+            RELIC_CATALOG, k=min(3, len(RELIC_CATALOG))
+        )
+        self.relic_choice_index = 0
+        self.state = "LEVEL_UP"
+        self.sound.play("levelup")
+
+    def _select_relic(self, idx: int) -> None:
+        assert self.player is not None
+        if 0 <= idx < len(self.relic_choices):
+            chosen = self.relic_choices[idx]
+            self.player.apply_relic(chosen["id"])
+            self.floating_texts.append(
+                FloatingText(
+                    self.player.x,
+                    self.player.y - 28,
+                    f"RELIC: {chosen['name']}!",
+                    chosen["color"],
+                    lifetime=1.4,
+                    max_lifetime=1.4,
+                    scale=1.25,
+                )
+            )
+            self._spawn_burst(self.player.x, self.player.y, chosen["color"], count=20, speed=190.0)
+            self.sound.play("pickup")
+        self.state = "PLAYING"
+
     def handle_events(self) -> bool:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
+
+            if event.type == pygame.MOUSEMOTION:
+                if event.pos != self.last_mouse_pos:
+                    self.last_mouse_pos = event.pos
+                    self.mouse_active_timer = 1.6
 
             if self.state == "MENU":
                 if event.type == pygame.KEYDOWN:
@@ -164,28 +260,71 @@ class Game:
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                     self.start_new_run()
 
+            elif self.state == "LEVEL_UP":
+                if event.type == pygame.KEYDOWN:
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        self.relic_choice_index = (
+                            self.relic_choice_index - 1
+                        ) % max(1, len(self.relic_choices))
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.relic_choice_index = (
+                            self.relic_choice_index + 1
+                        ) % max(1, len(self.relic_choices))
+                    elif event.key == pygame.K_1:
+                        self._select_relic(0)
+                    elif event.key == pygame.K_2 and len(self.relic_choices) >= 2:
+                        self._select_relic(1)
+                    elif event.key == pygame.K_3 and len(self.relic_choices) >= 3:
+                        self._select_relic(2)
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE, pygame.K_j):
+                        self._select_relic(self.relic_choice_index)
+
+            elif self.state == "PAUSED":
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        self.state = "PLAYING"
+                    elif event.key in (pygame.K_UP, pygame.K_w):
+                        self.pause_index = (self.pause_index - 1) % 4
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        self.pause_index = (self.pause_index + 1) % 4
+                    elif event.key == pygame.K_r:
+                        self.start_new_run()
+                    elif event.key == pygame.K_m:
+                        self.state = "MENU"
+                    elif event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                        if self.pause_index == 0:
+                            self.state = "PLAYING"
+                        elif self.pause_index == 1:
+                            self.start_new_run()
+                        elif self.pause_index == 2:
+                            self.state = "MENU"
+                        elif self.pause_index == 3:
+                            return False
+
             elif self.state == "PLAYING":
                 assert self.player is not None
                 if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
-                        self.state = "MENU"
+                    if event.key in (pygame.K_ESCAPE, pygame.K_p):
+                        self.pause_index = 0
+                        self.state = "PAUSED"
                     elif event.key in (pygame.K_SPACE, pygame.K_j):
-                        self.player.start_attack(self._get_mouse_aim_angle())
+                        if self.player.start_attack(self._get_smart_aim_angle()):
+                            self.sound.play("slash")
                     elif event.key in (pygame.K_LSHIFT, pygame.K_RSHIFT, pygame.K_k):
-                        mx, my = self._get_move_vector()
-                        if self.player.start_dash(mx, my):
-                            self._spawn_burst(
-                                self.player.x, self.player.y, COLOR_PLAYER, count=8, speed=90.0
-                            )
+                        self._trigger_dash()
+                    elif event.key in (pygame.K_q, pygame.K_1, pygame.K_u):
+                        self._trigger_whirlwind()
+                    elif event.key in (pygame.K_e, pygame.K_2, pygame.K_i):
+                        self._trigger_eldritch_nova()
+                    elif event.key in (pygame.K_r, pygame.K_3, pygame.K_o):
+                        self._trigger_chain_lightning()
                 elif event.type == pygame.MOUSEBUTTONDOWN:
                     if event.button == 1:
-                        self.player.start_attack(self._get_mouse_aim_angle())
+                        self.mouse_active_timer = 2.0
+                        if self.player.start_attack(self._get_smart_aim_angle()):
+                            self.sound.play("slash")
                     elif event.button == 3:
-                        mx, my = self._get_move_vector()
-                        if self.player.start_dash(mx, my):
-                            self._spawn_burst(
-                                self.player.x, self.player.y, COLOR_PLAYER, count=8, speed=90.0
-                            )
+                        self._trigger_dash()
 
             elif self.state in ("GAME_OVER", "VICTORY"):
                 if event.type == pygame.KEYDOWN:
@@ -198,36 +337,299 @@ class Game:
 
         return True
 
-    def _get_move_vector(self) -> tuple[float, float]:
+    def _trigger_dash(self) -> None:
+        assert self.player is not None
+        mx, my = self._get_move_vector()
+        if self.player.start_dash(mx, my):
+            self.sound.play("dash")
+            self._spawn_burst(
+                self.player.x, self.player.y, COLOR_ABILITY_DASH, count=10, speed=110.0
+            )
+
+    def _trigger_whirlwind(self) -> None:
+        assert self.player is not None
+        if self.player.start_whirlwind():
+            self.sound.play("whirlwind")
+            self.used_abilities_this_run.add("whirlwind")
+            self._check_storm_weaver_achievement()
+            self.shockwaves.append(
+                ShockwaveRingFX(
+                    x=self.player.x,
+                    y=self.player.y,
+                    radius=10.0,
+                    max_radius=ABILITY_WHIRLWIND_RADIUS,
+                    color=COLOR_ABILITY_WHIRLWIND,
+                )
+            )
+            self._spawn_burst(
+                self.player.x,
+                self.player.y,
+                COLOR_ABILITY_WHIRLWIND,
+                count=18,
+                speed=190.0,
+            )
+
+    def _trigger_eldritch_nova(self) -> None:
+        assert self.player is not None
+        orbs = self.player.cast_eldritch_nova()
+        if orbs:
+            self.sound.play("nova")
+            self.used_abilities_this_run.add("nova")
+            self._check_storm_weaver_achievement()
+            self.projectiles.extend(orbs)
+            self.shockwaves.append(
+                ShockwaveRingFX(
+                    x=self.player.x,
+                    y=self.player.y,
+                    radius=8.0,
+                    max_radius=92.0,
+                    color=COLOR_ABILITY_NOVA,
+                )
+            )
+            self.renderer.trigger_shake(4.5, 0.14)
+
+    def _trigger_chain_lightning(self) -> None:
+        assert self.player is not None
+        if not self.player.can_cast_lightning():
+            return
+
+        # Find up to ABILITY_LIGHTNING_CHAINS nearest living enemies in range
+        living = [
+            e
+            for e in self.enemies
+            if e.alive
+            and math.hypot(e.x - self.player.x, e.y - self.player.y)
+            <= ABILITY_LIGHTNING_RANGE
+        ]
+        if not living:
+            # Still fire a visual lightning arc forward even if no enemies in range
+            self.player.trigger_lightning_cooldown()
+            self.sound.play("lightning")
+            tx = self.player.x + math.cos(self.player.facing_angle) * 180.0
+            ty = self.player.y + math.sin(self.player.facing_angle) * 180.0
+            self.lightning_bolts.append(
+                LightningBoltFX(
+                    points=self._build_jagged_line(self.player.x, self.player.y, tx, ty),
+                    color=COLOR_ABILITY_LIGHTNING,
+                )
+            )
+            return
+
+        self.player.trigger_lightning_cooldown()
+        self.sound.play("lightning")
+        self.used_abilities_this_run.add("lightning")
+        self._check_storm_weaver_achievement()
+        self.renderer.trigger_shake(7.5, 0.20)
+
+        living.sort(
+            key=lambda e: math.hypot(e.x - self.player.x, e.y - self.player.y)
+        )
+        targets = living[:ABILITY_LIGHTNING_CHAINS]
+
+        prev_x, prev_y = self.player.x, self.player.y
+        base_dmg = (
+            self.player.damage
+            * ABILITY_LIGHTNING_DAMAGE_MULT
+            * self.player.ability_power_mult
+        )
+
+        for target in targets:
+            bolt_pts = self._build_jagged_line(prev_x, prev_y, target.x, target.y)
+            self.lightning_bolts.append(
+                LightningBoltFX(points=bolt_pts, color=COLOR_ABILITY_LIGHTNING)
+            )
+            dmg, is_crit = self.player.roll_damage(base_dmg)
+            self._damage_enemy(target, dmg, is_crit, prev_x, prev_y, COLOR_ABILITY_LIGHTNING)
+            prev_x, prev_y = target.x, target.y
+
+    def _check_storm_weaver_achievement(self) -> None:
+        if {"whirlwind", "nova", "lightning"}.issubset(self.used_abilities_this_run):
+            self.unlock_achievement("storm_weaver")
+
+    def _build_jagged_line(
+        self, x1: float, y1: float, x2: float, y2: float, segments: int = 6
+    ) -> List[Tuple[float, float]]:
+        pts: List[Tuple[float, float]] = [(x1, y1)]
+        dx = x2 - x1
+        dy = y2 - y1
+        dist = max(1.0, math.hypot(dx, dy))
+        px = -dy / dist
+        py = dx / dist
+        for i in range(1, segments):
+            t = i / segments
+            jitter = random.uniform(-14.0, 14.0)
+            pts.append((x1 + dx * t + px * jitter, y1 + dy * t + py * jitter))
+        pts.append((x2, y2))
+        return pts
+
+    def _get_move_vector(self) -> Tuple[float, float]:
         keys = pygame.key.get_pressed()
         dx = 0.0
         dy = 0.0
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
+        if keys[pygame.K_a]:
             dx -= 1.0
-        if keys[pygame.K_d] or keys[pygame.K_RIGHT]:
+        if keys[pygame.K_d]:
             dx += 1.0
-        if keys[pygame.K_w] or keys[pygame.K_UP]:
+        if keys[pygame.K_w]:
             dy -= 1.0
-        if keys[pygame.K_s] or keys[pygame.K_DOWN]:
+        if keys[pygame.K_s]:
             dy += 1.0
+
+        # If WASD isn't pressed, also allow Arrow keys to move if the player prefers single-stick play
+        if abs(dx) < 0.01 and abs(dy) < 0.01:
+            if keys[pygame.K_LEFT]:
+                dx -= 1.0
+            if keys[pygame.K_RIGHT]:
+                dx += 1.0
+            if keys[pygame.K_UP]:
+                dy -= 1.0
+            if keys[pygame.K_DOWN]:
+                dy += 1.0
         return (dx, dy)
 
-    def _get_mouse_aim_angle(self) -> Optional[float]:
+    def _get_smart_aim_angle(self) -> Optional[float]:
+        """
+        Smart Multi-Modal Aiming (fixes mouse-stuck issues completely):
+        1. Twin-Stick Arrow Keys: If any Arrow key is held, aim in that 8-way direction.
+        2. Auto-Target Nearest Threat: If an enemy is within 210px and visible, snap-assist toward it.
+        3. Movement Direction: If moving with WASD, face the movement vector.
+        4. Active Mouse: Only use mouse cursor if the mouse was recently moved.
+        """
         if self.player is None:
             return None
-        mx, my = pygame.mouse.get_pos()
-        cam_ox, cam_oy = self.renderer.get_camera_offset(self.time_sec)
-        world_mx = mx + cam_ox
-        world_my = my + cam_oy
-        dx = world_mx - self.player.x
-        dy = world_my - self.player.y
-        if abs(dx) < 1.0 and abs(dy) < 1.0:
-            return None
-        return math.atan2(dy, dx)
+
+        keys = pygame.key.get_pressed()
+        ax = 0.0
+        ay = 0.0
+        if keys[pygame.K_LEFT]:
+            ax -= 1.0
+        if keys[pygame.K_RIGHT]:
+            ax += 1.0
+        if keys[pygame.K_UP]:
+            ay -= 1.0
+        if keys[pygame.K_DOWN]:
+            ay += 1.0
+
+        if abs(ax) > 0.01 or abs(ay) > 0.01:
+            self.player.aim_mode = "KEYS"
+            return math.atan2(ay, ax)
+
+        # Smart melee/combat auto-aim toward closest living enemy within 210px
+        nearest_enemy: Optional[Enemy] = None
+        nearest_dist = 210.0
+        for e in self.enemies:
+            if not e.alive:
+                continue
+            d = math.hypot(e.x - self.player.x, e.y - self.player.y)
+            if d < nearest_dist:
+                nearest_dist = d
+                nearest_enemy = e
+
+        if nearest_enemy is not None:
+            self.player.aim_mode = "AUTO"
+            return math.atan2(
+                nearest_enemy.y - self.player.y, nearest_enemy.x - self.player.x
+            )
+
+        # Movement direction aim
+        mx, my = self._get_move_vector()
+        if abs(mx) > 0.01 or abs(my) > 0.01:
+            self.player.aim_mode = "MOVE"
+            return math.atan2(my, mx)
+
+        # If mouse was actively moved recently, aim toward mouse
+        if self.mouse_active_timer > 0.0:
+            self.player.aim_mode = "MOUSE"
+            mpx, mpy = pygame.mouse.get_pos()
+            cam_ox, cam_oy = self.renderer.get_camera_offset(self.time_sec)
+            world_mx = mpx + cam_ox
+            world_my = mpy + cam_oy
+            dx = world_mx - self.player.x
+            dy = world_my - self.player.y
+            if abs(dx) > 1.0 or abs(dy) > 1.0:
+                return math.atan2(dy, dx)
+
+        return self.player.facing_angle
+
+    def _damage_enemy(
+        self,
+        enemy: Enemy,
+        dmg: int,
+        is_crit: bool,
+        source_x: float,
+        source_y: float,
+        spark_color: Tuple[int, int, int],
+    ) -> None:
+        assert self.player is not None
+        assert self.dungeon is not None
+        if not enemy.alive:
+            return
+
+        actual = enemy.take_damage(dmg, source_x, source_y)
+        self.sound.play("crit" if is_crit else "hit")
+        self.renderer.trigger_shake(6.0 if is_crit else 3.8, 0.12)
+        if is_crit:
+            self.hitstop_timer = 0.028
+
+        self._spawn_burst(
+            enemy.x, enemy.y, spark_color, count=12 if is_crit else 8, speed=155.0
+        )
+        txt_col = COLOR_SWORD_CRIT if is_crit else COLOR_GOLD
+        txt_str = f"{actual}!" if is_crit else f"-{actual}"
+        self.floating_texts.append(
+            FloatingText(
+                enemy.x,
+                enemy.y - enemy.radius - 4,
+                txt_str,
+                txt_col,
+                scale=1.3 if is_crit else 1.0,
+            )
+        )
+
+        if not enemy.alive:
+            self.sound.play("kill")
+            self.run_kills += 1
+            self.unlock_achievement("first_blood")
+            self.score += enemy.score_value
+            if self.score >= 1500:
+                self.unlock_achievement("centurion")
+
+            self.dungeon.add_decal(
+                enemy.x,
+                enemy.y,
+                color=(38, 18, 42) if enemy.enemy_type != "slime" else (18, 52, 32),
+                radius=enemy.radius * 0.9,
+            )
+            self._spawn_burst(enemy.x, enemy.y, enemy.color, count=22, speed=195.0)
+            self.floating_texts.append(
+                FloatingText(
+                    enemy.x,
+                    enemy.y - enemy.radius - 18,
+                    f"+{enemy.score_value}",
+                    COLOR_GOLD,
+                )
+            )
+            if self.player.vampiric_heal > 0:
+                self.player.heal(self.player.vampiric_heal)
+
+            if random.random() < 0.25:
+                self.pickups.append(HealthPickup(x=enemy.x, y=enemy.y))
+
+            if self.player.gain_xp(enemy.xp_value):
+                self._offer_level_up_relics()
 
     def update(self, dt: float) -> None:
         self.time_sec += dt
+        if self.toast_timer > 0.0:
+            self.toast_timer = max(0.0, self.toast_timer - dt)
+        if self.mouse_active_timer > 0.0:
+            self.mouse_active_timer = max(0.0, self.mouse_active_timer - dt)
+
         if self.state != "PLAYING":
+            return
+
+        if self.hitstop_timer > 0.0:
+            self.hitstop_timer = max(0.0, self.hitstop_timer - dt)
             return
 
         assert self.player is not None
@@ -237,23 +639,36 @@ class Game:
             self.banner_timer = max(0.0, self.banner_timer - dt)
 
         move_dx, move_dy = self._get_move_vector()
-        aim_angle = self._get_mouse_aim_angle()
+        aim_angle = self._get_smart_aim_angle()
 
-        # Hold left mouse button or space for continuous attacks when off cooldown
         mouse_buttons = pygame.mouse.get_pressed()
         keys = pygame.key.get_pressed()
         if mouse_buttons[0] or keys[pygame.K_SPACE] or keys[pygame.K_j]:
-            self.player.start_attack(aim_angle)
+            if self.player.start_attack(aim_angle):
+                self.sound.play("slash")
 
-        self.player.update(dt, move_dx, move_dy, aim_angle, self.dungeon)
+        ghost = self.player.update(dt, move_dx, move_dy, aim_angle, self.dungeon)
+        if ghost is not None:
+            self.afterimages.append(ghost)
+
         self.dungeon.reveal_around(self.player.x, self.player.y)
         self.renderer.update_camera(self.player.x, self.player.y, dt)
 
-        # Resolve player melee slash hits
         if self.player.is_attacking:
             self._resolve_player_melee()
 
-        # Update enemies & collect AI events
+        if self.player.is_whirlwinding:
+            self._resolve_whirlwind_hits()
+
+        if self.player.is_dashing:
+            self._resolve_dash_hits()
+
+        # Update destructible crates
+        for crate in self.dungeon.crates:
+            if crate.hit_flash > 0.0:
+                crate.hit_flash = max(0.0, crate.hit_flash - dt)
+
+        # Update enemies
         new_minions: List[Enemy] = []
         for enemy in self.enemies:
             if not enemy.alive:
@@ -264,42 +679,80 @@ class Game:
             if events.spawned_minions and len(self.enemies) < 18:
                 new_minions.extend(events.spawned_minions)
             if events.shockwave:
-                self.renderer.trigger_shake(8.0, 0.22)
+                self.renderer.trigger_shake(8.5, 0.24)
+                self.shockwaves.append(
+                    ShockwaveRingFX(
+                        x=enemy.x,
+                        y=enemy.y,
+                        radius=12.0,
+                        max_radius=120.0,
+                        color=enemy.color,
+                    )
+                )
 
-            # Contact damage check with player
             dist = math.hypot(self.player.x - enemy.x, self.player.y - enemy.y)
             if dist < self.player.radius + enemy.radius - 2.0:
                 dmg = self.player.take_damage(enemy.damage, enemy.x, enemy.y)
                 if dmg > 0:
-                    self.renderer.trigger_shake(7.0, 0.18)
-                    self._spawn_burst(self.player.x, self.player.y, COLOR_HP_BAR, count=12)
+                    self.sound.play("hurt")
+                    self.renderer.trigger_shake(7.5, 0.20)
+                    self._spawn_burst(self.player.x, self.player.y, COLOR_HP_BAR, count=14)
                     self.floating_texts.append(
-                        FloatingText(self.player.x, self.player.y - 18, f"-{dmg}", COLOR_HP_BAR)
+                        FloatingText(
+                            self.player.x,
+                            self.player.y - 20,
+                            f"-{dmg}",
+                            COLOR_HP_BAR,
+                            scale=1.2,
+                        )
                     )
 
         if new_minions:
             self.enemies.extend(new_minions)
 
-        # Update projectiles
+        # Update projectiles (both Player Eldritch Nova lances & Enemy bolts)
         for proj in self.projectiles:
             if not proj.alive:
                 continue
             proj.update(dt, self.dungeon)
             if not proj.alive:
-                self._spawn_burst(proj.x, proj.y, proj.color, count=5, speed=80.0)
+                self._spawn_burst(proj.x, proj.y, proj.color, count=6, speed=85.0)
                 continue
 
-            if not proj.from_player:
+            if proj.from_player:
+                for enemy in self.enemies:
+                    if not enemy.alive or enemy.id in proj.hit_enemy_ids:
+                        continue
+                    if (
+                        math.hypot(enemy.x - proj.x, enemy.y - proj.y)
+                        <= enemy.radius + proj.radius
+                    ):
+                        proj.hit_enemy_ids.add(enemy.id)
+                        dmg, is_crit = self.player.roll_damage(proj.damage)
+                        self._damage_enemy(
+                            enemy, dmg, is_crit, proj.x, proj.y, proj.color
+                        )
+                        if not proj.piercing:
+                            proj.alive = False
+                            break
+            else:
                 dist = math.hypot(self.player.x - proj.x, self.player.y - proj.y)
                 if dist < self.player.radius + proj.radius:
                     proj.alive = False
                     dmg = self.player.take_damage(proj.damage, proj.x, proj.y)
                     if dmg > 0:
-                        self.renderer.trigger_shake(6.5, 0.16)
-                        self._spawn_burst(self.player.x, self.player.y, COLOR_HP_BAR, count=10)
+                        self.sound.play("hurt")
+                        self.renderer.trigger_shake(7.0, 0.18)
+                        self._spawn_burst(
+                            self.player.x, self.player.y, COLOR_HP_BAR, count=12
+                        )
                         self.floating_texts.append(
                             FloatingText(
-                                self.player.x, self.player.y - 18, f"-{dmg}", COLOR_HP_BAR
+                                self.player.x,
+                                self.player.y - 20,
+                                f"-{dmg}",
+                                COLOR_HP_BAR,
+                                scale=1.2,
                             )
                         )
 
@@ -311,109 +764,205 @@ class Game:
                 continue
             pickup.update(dt)
             dist = math.hypot(self.player.x - pickup.x, self.player.y - pickup.y)
-            if dist < self.player.radius + pickup.radius + 4.0:
+            if dist < self.player.radius + pickup.radius + 5.0:
                 healed = self.player.heal(pickup.heal_amount)
                 if healed > 0 or self.player.hp == self.player.max_hp:
                     pickup.collected = True
+                    self.sound.play("pickup")
                     self.score += SCORE_HEALTH_PICKUP
-                    self._spawn_burst(pickup.x, pickup.y, COLOR_PICKUP_HP, count=12, speed=110.0)
-                    label = f"+{healed} HP" if healed > 0 else f"+{SCORE_HEALTH_PICKUP} PTS"
+                    self._spawn_burst(
+                        pickup.x, pickup.y, COLOR_PICKUP_HP, count=14, speed=120.0
+                    )
+                    label = (
+                        f"+{healed} HP"
+                        if healed > 0
+                        else f"+{SCORE_HEALTH_PICKUP} PTS"
+                    )
                     self.floating_texts.append(
-                        FloatingText(pickup.x, pickup.y - 14, label, (100, 245, 130))
+                        FloatingText(pickup.x, pickup.y - 16, label, (105, 250, 140))
                     )
 
         self.pickups = [p for p in self.pickups if not p.collected]
 
-        # Update particles & floating texts
+        # Update visual FX lists
         self.particles = [pt for pt in self.particles if pt.update(dt)]
+        self.afterimages = [gh for gh in self.afterimages if gh.update(dt)]
+        self.lightning_bolts = [lb for lb in self.lightning_bolts if lb.update(dt)]
+        self.shockwaves = [sw for sw in self.shockwaves if sw.update(dt)]
         self.floating_texts = [ft for ft in self.floating_texts if ft.update(dt)]
 
-        # Check player death
         if not self.player.alive:
             self.hs_data = save_highscore_data(
-                self.score, self.floor_num, victory=False
+                self.score,
+                self.floor_num,
+                victory=False,
+                kills=self.run_kills,
+                unlocked_achievements=list(self.unlocked_achievements),
             )
             self.state = "GAME_OVER"
             return
 
-        # Check Boss defeat on Floor 5 -> Victory!
         if self.floor_num == BOSS_FLOOR:
             boss_alive = any(e.is_boss and e.alive for e in self.enemies)
             if not boss_alive:
                 self.score += SCORE_FLOOR_CLEAR * 2
+                self.unlock_achievement("kingslayer")
                 self.hs_data = save_highscore_data(
-                    self.score, self.floor_num, victory=True
+                    self.score,
+                    self.floor_num,
+                    victory=True,
+                    kills=self.run_kills,
+                    unlocked_achievements=list(self.unlocked_achievements),
                 )
                 self.state = "VICTORY"
                 return
 
-        # Check stairs descent on floors 1..4
         if self.dungeon.stairs_tile is not None and self.dungeon.stairs_unlocked:
             stx, sty = self.dungeon.stairs_tile
             stairs_px = (stx + 0.5) * TILE_SIZE
             stairs_py = (sty + 0.5) * TILE_SIZE
-            if math.hypot(self.player.x - stairs_px, self.player.y - stairs_py) < TILE_SIZE * 0.52:
+            if (
+                math.hypot(self.player.x - stairs_px, self.player.y - stairs_py)
+                < TILE_SIZE * 0.55
+            ):
                 self.score += SCORE_FLOOR_CLEAR
                 self._load_floor(self.floor_num + 1)
 
     def _resolve_player_melee(self) -> None:
         assert self.player is not None
+        assert self.dungeon is not None
+        is_finisher = self.player.combo_step == 2
+        reach = PLAYER_ATTACK_RANGE * (1.22 if is_finisher else 1.0)
+        half_arc = PLAYER_ATTACK_ARC * (0.62 if is_finisher else 0.55)
+        combo_mult = 1.35 if is_finisher else (1.12 if self.player.combo_step == 1 else 1.0)
+
         for enemy in self.enemies:
             if not enemy.alive or enemy.id in self.player.hit_targets_this_swing:
                 continue
             dx = enemy.x - self.player.x
             dy = enemy.y - self.player.y
             dist = math.hypot(dx, dy)
-            if dist <= PLAYER_ATTACK_RANGE + enemy.radius:
+            if dist <= reach + enemy.radius:
                 ang_to_enemy = math.atan2(dy, dx)
                 if (
-                    abs(angle_diff(ang_to_enemy, self.player.attack_angle))
-                    <= PLAYER_ATTACK_ARC * 0.55
-                    or dist < self.player.radius + enemy.radius + 6.0
+                    abs(angle_diff(ang_to_enemy, self.player.attack_angle)) <= half_arc
+                    or dist < self.player.radius + enemy.radius + 8.0
                 ):
                     self.player.hit_targets_this_swing.add(enemy.id)
-                    dmg = enemy.take_damage(
-                        self.player.damage, self.player.x, self.player.y
+                    dmg, is_crit = self.player.roll_damage(
+                        self.player.damage * combo_mult
                     )
-                    self.renderer.trigger_shake(4.0, 0.10)
-                    self._spawn_burst(enemy.x, enemy.y, COLOR_SWORD_TRAIL, count=9, speed=130.0)
-                    self.floating_texts.append(
-                        FloatingText(enemy.x, enemy.y - enemy.radius, f"-{dmg}", COLOR_GOLD)
+                    if is_finisher:
+                        is_crit = True
+                    self._damage_enemy(
+                        enemy,
+                        dmg,
+                        is_crit,
+                        self.player.x,
+                        self.player.y,
+                        COLOR_SWORD_CRIT if is_finisher else COLOR_SWORD_TRAIL,
                     )
-                    if not enemy.alive:
-                        self.score += enemy.score_value
-                        self._spawn_burst(enemy.x, enemy.y, enemy.color, count=18, speed=175.0)
-                        self.floating_texts.append(
-                            FloatingText(
-                                enemy.x,
-                                enemy.y - enemy.radius - 14,
-                                f"+{enemy.score_value}",
-                                COLOR_GOLD,
-                            )
-                        )
-                        # 22% chance to drop a bonus health pickup on enemy kill
-                        if random.random() < 0.22:
-                            self.pickups.append(HealthPickup(x=enemy.x, y=enemy.y))
 
-        # Player sword slash can also deflect/destroy enemy projectiles in arc
+        # Break destructible crates in sword arc
+        for crate in self.dungeon.crates:
+            if crate.destroyed:
+                continue
+            dx = crate.x - self.player.x
+            dy = crate.y - self.player.y
+            dist = math.hypot(dx, dy)
+            if dist <= reach + crate.radius:
+                crate.destroyed = True
+                self.score += SCORE_CRATE_BREAK
+                self.sound.play("hit")
+                self._spawn_burst(crate.x, crate.y, COLOR_CRATE_WOOD, count=12, speed=140.0)
+                if random.random() < 0.35:
+                    self.pickups.append(HealthPickup(x=crate.x, y=crate.y))
+
+        # Deflect enemy projectiles in sword arc
         for proj in self.projectiles:
             if not proj.alive or proj.from_player:
                 continue
             dx = proj.x - self.player.x
             dy = proj.y - self.player.y
             dist = math.hypot(dx, dy)
-            if dist <= PLAYER_ATTACK_RANGE + proj.radius:
+            if dist <= reach + proj.radius:
                 ang = math.atan2(dy, dx)
-                if abs(angle_diff(ang, self.player.attack_angle)) <= PLAYER_ATTACK_ARC * 0.55:
+                if abs(angle_diff(ang, self.player.attack_angle)) <= half_arc:
                     proj.alive = False
-                    self._spawn_burst(proj.x, proj.y, COLOR_SWORD_TRAIL, count=6, speed=100.0)
+                    self._spawn_burst(
+                        proj.x, proj.y, COLOR_SWORD_TRAIL, count=6, speed=110.0
+                    )
+
+    def _resolve_whirlwind_hits(self) -> None:
+        assert self.player is not None
+        assert self.dungeon is not None
+        for enemy in self.enemies:
+            if not enemy.alive or enemy.id in self.player.whirlwind_hit_ids:
+                continue
+            dist = math.hypot(enemy.x - self.player.x, enemy.y - self.player.y)
+            if dist <= ABILITY_WHIRLWIND_RADIUS + enemy.radius:
+                self.player.whirlwind_hit_ids.add(enemy.id)
+                base = (
+                    self.player.damage
+                    * ABILITY_WHIRLWIND_DAMAGE_MULT
+                    * self.player.ability_power_mult
+                )
+                dmg, is_crit = self.player.roll_damage(base)
+                self._damage_enemy(
+                    enemy,
+                    dmg,
+                    is_crit,
+                    self.player.x,
+                    self.player.y,
+                    COLOR_ABILITY_WHIRLWIND,
+                )
+
+        # Whirlwind also shatters nearby crates and enemy projectiles
+        for crate in self.dungeon.crates:
+            if not crate.destroyed and (
+                math.hypot(crate.x - self.player.x, crate.y - self.player.y)
+                <= ABILITY_WHIRLWIND_RADIUS + crate.radius
+            ):
+                crate.destroyed = True
+                self.score += SCORE_CRATE_BREAK
+                self._spawn_burst(crate.x, crate.y, COLOR_CRATE_WOOD, count=10, speed=130.0)
+
+        for proj in self.projectiles:
+            if not proj.alive or proj.from_player:
+                continue
+            if (
+                math.hypot(proj.x - self.player.x, proj.y - self.player.y)
+                <= ABILITY_WHIRLWIND_RADIUS + proj.radius
+            ):
+                proj.alive = False
+                self._spawn_burst(
+                    proj.x, proj.y, COLOR_ABILITY_WHIRLWIND, count=6, speed=110.0
+                )
+
+    def _resolve_dash_hits(self) -> None:
+        assert self.player is not None
+        for enemy in self.enemies:
+            if not enemy.alive or enemy.id in self.player.dash_hit_ids:
+                continue
+            dist = math.hypot(enemy.x - self.player.x, enemy.y - self.player.y)
+            if dist <= self.player.radius + enemy.radius + 10.0:
+                self.player.dash_hit_ids.add(enemy.id)
+                dmg = int(PLAYER_DASH_DAMAGE * self.player.ability_power_mult)
+                self._damage_enemy(
+                    enemy,
+                    dmg,
+                    False,
+                    self.player.x,
+                    self.player.y,
+                    COLOR_ABILITY_DASH,
+                )
 
     def render(self) -> None:
         if self.state == "MENU":
             self.renderer.render_main_menu(
                 self.hs_data, self.menu_index, self.time_sec
             )
-        elif self.state in ("PLAYING", "GAME_OVER", "VICTORY"):
+        elif self.state in ("PLAYING", "LEVEL_UP", "PAUSED", "GAME_OVER", "VICTORY"):
             assert self.dungeon is not None
             assert self.player is not None
             self.renderer.render_gameplay(
@@ -423,18 +972,33 @@ class Game:
                 projectiles=self.projectiles,
                 pickups=self.pickups,
                 particles=self.particles,
+                afterimages=self.afterimages,
+                lightning_bolts=self.lightning_bolts,
+                shockwaves=self.shockwaves,
                 floating_texts=self.floating_texts,
                 score=self.score,
                 high_score=self.hs_data.get("high_score", 0),
                 time_sec=self.time_sec,
                 banner_text=self.banner_text,
                 banner_timer=self.banner_timer,
+                toast_text=self.toast_text,
+                toast_timer=self.toast_timer,
             )
-            if self.state == "GAME_OVER":
+            if self.state == "LEVEL_UP":
+                self.renderer.render_relic_selection(
+                    self.relic_choices,
+                    self.relic_choice_index,
+                    self.player.level,
+                )
+            elif self.state == "PAUSED":
+                self.renderer.render_pause_overlay(self.pause_index)
+            elif self.state == "GAME_OVER":
                 self.renderer.render_end_screen(
                     victory=False,
                     score=self.score,
                     floor_num=self.floor_num,
+                    player_level=self.player.level,
+                    kills=self.run_kills,
                     hs_data=self.hs_data,
                 )
             elif self.state == "VICTORY":
@@ -442,6 +1006,8 @@ class Game:
                     victory=True,
                     score=self.score,
                     floor_num=self.floor_num,
+                    player_level=self.player.level,
+                    kills=self.run_kills,
                     hs_data=self.hs_data,
                 )
 
@@ -467,23 +1033,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--smoke-test",
         action="store_true",
-        help="Run automated simulation across menu, floors 1-5, combat, and highscore saving",
+        help="Run automated simulation across menu, floors 1-5, abilities, relics, and highscore saving",
     )
     return parser.parse_args()
 
 
 def run_smoke_test() -> int:
-    """Automated verification of menu, dungeon generation, 3 enemy types, boss floor 5, and high score persistence."""
+    """Automated verification of menu, dungeon generation, all 4 abilities, relic level-ups, 3 enemy types, boss floor 5, and high score persistence."""
     game = Game(seed=42)
-    # Render menu frame
     game.render()
-    # Start run and simulate Floors 1..5
     game.start_new_run()
     for floor in range(1, BOSS_FLOOR + 1):
         game._load_floor(floor)
         assert game.player is not None
         game.player.start_attack(0.5)
-        game.player.start_dash(1.0, 0.0)
+        game._trigger_dash()
+        game._trigger_whirlwind()
+        game._trigger_eldritch_nova()
+        game._trigger_chain_lightning()
         for _ in range(15):
             game.update(1.0 / 60.0)
             game.render()

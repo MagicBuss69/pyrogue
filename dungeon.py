@@ -1,4 +1,4 @@
-"""Procedural dungeon generator for floors 1-5."""
+"""Procedural dungeon generator for floors 1-5 with torches, breakable crates, shrines, and decals."""
 
 from dataclasses import dataclass, field
 import math
@@ -10,6 +10,7 @@ from settings import (
     DUNGEON_HEIGHT,
     DUNGEON_WIDTH,
     TILE_FLOOR,
+    TILE_PILLAR,
     TILE_SIZE,
     TILE_STAIRS_DOWN,
     TILE_VOID,
@@ -25,7 +26,7 @@ class Room:
     y: int
     w: int
     h: int
-    room_type: str = "normal"  # "start", "normal", "exit", "boss"
+    room_type: str = "normal"  # "start", "normal", "exit", "boss", "shrine"
     cleared: bool = False
     visited: bool = False
 
@@ -87,8 +88,41 @@ class PickupSpawnSpec:
 
 
 @dataclass
+class TorchProp:
+    """Wall-mounted flickering torch emitting warm dynamic glow."""
+
+    x: float
+    y: float
+    phase: float = 0.0
+    color_variant: str = "amber"  # "amber", "arcane", "crimson"
+
+
+@dataclass
+class BreakableCrate:
+    """Destructible dungeon barrel/crate that can drop health or bonus score."""
+
+    x: float
+    y: float
+    hp: int = 20
+    radius: float = 14.0
+    destroyed: bool = False
+    hit_flash: float = 0.0
+
+
+@dataclass
+class FloorDecal:
+    """Persistent bloodstain, scorch mark, or arcane sigil on the dungeon floor."""
+
+    x: float
+    y: float
+    radius: float
+    color: Tuple[int, int, int]
+    kind: str = "splatter"  # "splatter", "scorch", "rune"
+
+
+@dataclass
 class Dungeon:
-    """Represents a generated dungeon floor."""
+    """Represents a generated dungeon floor with rooms, lighting props, and destructibles."""
 
     floor_num: int
     width: int
@@ -101,6 +135,9 @@ class Dungeon:
     stairs_unlocked: bool = False
     enemy_spawns: List[EnemySpawnSpec] = field(default_factory=list)
     pickup_spawns: List[PickupSpawnSpec] = field(default_factory=list)
+    torches: List[TorchProp] = field(default_factory=list)
+    crates: List[BreakableCrate] = field(default_factory=list)
+    decals: List[FloorDecal] = field(default_factory=list)
 
     def is_walkable(self, tx: int, ty: int) -> bool:
         if tx < 0 or ty < 0 or tx >= self.width or ty >= self.height:
@@ -111,9 +148,9 @@ class Dungeon:
     def is_wall(self, tx: int, ty: int) -> bool:
         if tx < 0 or ty < 0 or tx >= self.width or ty >= self.height:
             return True
-        return self.grid[ty][tx] == TILE_WALL
+        return self.grid[ty][tx] in (TILE_WALL, TILE_PILLAR)
 
-    def reveal_around(self, px: float, py: float, radius_tiles: int = 8) -> None:
+    def reveal_around(self, px: float, py: float, radius_tiles: int = 9) -> None:
         cx = int(px // TILE_SIZE)
         cy = int(py // TILE_SIZE)
         r_sq = radius_tiles * radius_tiles
@@ -139,7 +176,6 @@ class Dungeon:
         for ty in range(min_ty, max_ty + 1):
             for tx in range(min_tx, max_tx + 1):
                 if not self.is_walkable(tx, ty):
-                    # Closest point on tile AABB to circle center
                     rx = max(tx * TILE_SIZE, min(px, (tx + 1) * TILE_SIZE))
                     ry = max(ty * TILE_SIZE, min(py, (ty + 1) * TILE_SIZE))
                     dx = px - rx
@@ -183,6 +219,18 @@ class Dungeon:
                 return False
         return True
 
+    def add_decal(
+        self,
+        x: float,
+        y: float,
+        color: Tuple[int, int, int],
+        radius: float = 14.0,
+        kind: str = "splatter",
+    ) -> None:
+        if len(self.decals) > 140:
+            self.decals.pop(0)
+        self.decals.append(FloorDecal(x=x, y=y, radius=radius, color=color, kind=kind))
+
 
 def _carve_room(grid: List[List[int]], room: Room) -> None:
     for ty in range(room.y, room.bottom):
@@ -212,7 +260,6 @@ def _surround_floors_with_walls(grid: List[List[int]]) -> None:
     for ty in range(height):
         for tx in range(width):
             if grid[ty][tx] == TILE_VOID:
-                # Check 8-neighborhood for any floor tile
                 near_floor = False
                 for dy in (-1, 0, 1):
                     for dx in (-1, 0, 1):
@@ -225,6 +272,54 @@ def _surround_floors_with_walls(grid: List[List[int]]) -> None:
                         break
                 if near_floor:
                     grid[ty][tx] = TILE_WALL
+
+
+def _populate_room_props(
+    rooms: List[Room],
+    rng: random.Random,
+    torches: List[TorchProp],
+    crates: List[BreakableCrate],
+    decals: List[FloorDecal],
+) -> None:
+    for idx, room in enumerate(rooms):
+        variant = "crimson" if room.room_type == "boss" else ("arcane" if idx % 3 == 0 else "amber")
+        # Place corner torches
+        corners = [
+            ((room.x + 0.5) * TILE_SIZE, (room.y + 0.35) * TILE_SIZE),
+            ((room.right - 0.5) * TILE_SIZE, (room.y + 0.35) * TILE_SIZE),
+        ]
+        if room.h >= 8:
+            corners.extend(
+                [
+                    ((room.x + 0.5) * TILE_SIZE, (room.bottom - 0.35) * TILE_SIZE),
+                    ((room.right - 0.5) * TILE_SIZE, (room.bottom - 0.35) * TILE_SIZE),
+                ]
+            )
+        for tx, ty in corners:
+            torches.append(
+                TorchProp(x=tx, y=ty, phase=rng.uniform(0.0, 6.28), color_variant=variant)
+            )
+
+        # Place arcane rune decal in start/exit/boss rooms
+        if room.room_type in ("start", "exit", "boss"):
+            cx, cy = room.center_px
+            decals.append(
+                FloorDecal(
+                    x=cx,
+                    y=cy,
+                    radius=TILE_SIZE * 1.15,
+                    color=(54, 44, 92) if room.room_type != "boss" else (95, 28, 52),
+                    kind="rune",
+                )
+            )
+
+        # Place breakable crates near room edges
+        if room.room_type != "start":
+            num_crates = rng.randint(1, 3)
+            for _ in range(num_crates):
+                cx, cy = room.random_floor_pixel(rng, margin=1)
+                if math.hypot(cx - room.center_px[0], cy - room.center_px[1]) > TILE_SIZE:
+                    crates.append(BreakableCrate(x=cx, y=cy))
 
 
 def generate_dungeon(
@@ -257,7 +352,6 @@ def generate_dungeon(
         _carve_room(grid, candidate)
         rooms.append(candidate)
 
-    # Guarantee at least 5 rooms even if random placement was tight
     if len(rooms) < 4:
         fallback_coords = [(4, 4, 8, 7), (20, 5, 9, 8), (35, 6, 8, 8), (22, 22, 10, 9)]
         for fx, fy, fw, fh in fallback_coords:
@@ -266,7 +360,6 @@ def generate_dungeon(
                 _carve_room(grid, candidate)
                 rooms.append(candidate)
 
-    # Connect rooms via minimum-spanning-like chain + extra loop connections
     for i in range(1, len(rooms)):
         cx1, cy1 = rooms[i - 1].center_tile
         cx2, cy2 = rooms[i].center_tile
@@ -277,7 +370,6 @@ def generate_dungeon(
             _carve_v_corridor(grid, cy1, cy2, cx1)
             _carve_h_corridor(grid, cx1, cx2, cy2)
 
-    # Add 1-2 extra loops for tactical navigation
     if len(rooms) >= 5:
         for _ in range(2):
             r_a, r_b = rng.sample(rooms, 2)
@@ -289,7 +381,6 @@ def generate_dungeon(
     rooms[0].room_type = "start"
     rooms[0].cleared = True
 
-    # Pick the room farthest from start as the stairs room
     start_cx, start_cy = rooms[0].center_tile
     exit_room_idx = max(
         range(1, len(rooms)),
@@ -306,8 +397,12 @@ def generate_dungeon(
 
     enemy_spawns: List[EnemySpawnSpec] = []
     pickup_spawns: List[PickupSpawnSpec] = []
+    torches: List[TorchProp] = []
+    crates: List[BreakableCrate] = []
+    decals: List[FloorDecal] = []
 
-    # Populate enemies and health pickups
+    _populate_room_props(rooms, rng, torches, crates, decals)
+
     enemy_pool = _get_enemy_pool_for_floor(floor_num)
     for idx, room in enumerate(rooms):
         if idx == 0:
@@ -332,8 +427,7 @@ def generate_dungeon(
                     )
                     break
 
-        # Spawn health pickups in some rooms (guaranteed at least 2 per floor)
-        if rng.random() < 0.45:
+        if rng.random() < 0.50:
             hx, hy = room.random_floor_pixel(rng, margin=1)
             pickup_spawns.append(PickupSpawnSpec(pickup_type="health", x=hx, y=hy))
 
@@ -354,6 +448,9 @@ def generate_dungeon(
         stairs_unlocked=True,
         enemy_spawns=enemy_spawns,
         pickup_spawns=pickup_spawns,
+        torches=torches,
+        crates=crates,
+        decals=decals,
     )
     dungeon.reveal_around(*dungeon.player_start)
     return dungeon
@@ -375,14 +472,13 @@ def _generate_boss_floor(
     _carve_room(grid, arena)
     _carve_v_corridor(grid, arena.bottom - 1, antechamber.y + 1, width // 2 - 1)
 
-    # Add 4 tactical pillars inside the boss arena for cover against projectiles
     pillar_offsets = [(-5, -4), (4, -4), (-5, 3), (4, 3)]
     acx, acy = arena.center_tile
     for dx, dy in pillar_offsets:
         px, py = acx + dx, acy + dy
         for oy in range(2):
             for ox in range(2):
-                grid[py + oy][px + ox] = TILE_WALL
+                grid[py + oy][px + ox] = TILE_PILLAR
 
     _surround_floors_with_walls(grid)
 
@@ -391,7 +487,6 @@ def _generate_boss_floor(
         EnemySpawnSpec(enemy_type="boss", x=boss_x, y=boss_y - TILE_SIZE * 2, room_index=1),
     ]
 
-    # Place health pickups in the antechamber and corners of the arena
     pickup_spawns = [
         PickupSpawnSpec(
             pickup_type="health",
@@ -411,6 +506,11 @@ def _generate_boss_floor(
     ]
 
     rooms = [antechamber, arena]
+    torches: List[TorchProp] = []
+    crates: List[BreakableCrate] = []
+    decals: List[FloorDecal] = []
+    _populate_room_props(rooms, rng, torches, crates, decals)
+
     dungeon = Dungeon(
         floor_num=floor_num,
         width=width,
@@ -423,8 +523,11 @@ def _generate_boss_floor(
         stairs_unlocked=False,
         enemy_spawns=enemy_spawns,
         pickup_spawns=pickup_spawns,
+        torches=torches,
+        crates=crates,
+        decals=decals,
     )
-    dungeon.reveal_around(*dungeon.player_start, radius_tiles=10)
+    dungeon.reveal_around(*dungeon.player_start, radius_tiles=11)
     return dungeon
 
 

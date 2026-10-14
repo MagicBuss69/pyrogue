@@ -1,56 +1,57 @@
-# Crypts of the Obsidian King
+# Crypts of the Obsidian King — Steam Edition (v2.0)
 
-A complete 2D action roguelike built in Python with `pygame`. Battle through procedurally generated dungeon floors, fight three distinct monster archetypes, collect health pickups, defeat **Malakor, the Obsidian King** on Floor 5, and track your all-time high score.
+A complete, Steam-ready 2D action roguelike built in Python with `pygame`. Descend 5 procedural floors of the Obsidian Crypts, unleash 4 arcane abilities, collect powerful Relics on level-up, unlock Steam-style achievements, and vanquish **Malakor, the Obsidian King** on Floor 5.
 
-## Features
+## What's New in v2.0 (Steam Launch Overhaul)
 
-- **Main Menu & High Score Persistence**: View your all-time high score, best floor reached, total expeditions, and victories (saved automatically to `highscore.json`).
-- **Procedural Dungeon Generation**: Floors 1–4 generate interconnected rooms, corridors, fog-of-war minimap exploration, health pickups, enemy squads, and descending stairs.
-- **Player Combat & Movement**:
-  - Smooth 8-directional movement with wall-sliding collision (`WASD` or Arrow keys).
-  - Directional crescent sword slash (`Left Click`, `SPACE`, or `J`) that damages enemies and can deflect enemy projectiles.
-  - Invulnerable evasion dash (`SHIFT`, `Right Click`, or `K`).
-- **3 Distinct Enemy Types**:
-  1. **Venom Slime**: Compresses and executes rapid hop-lunges toward the player.
-  2. **Void Cultist**: Kites at medium range, strafes, and fires arcane bolts when in line of sight.
-  3. **Bone Juggernaut**: Heavy armored brute that stalks the player, telegraphs a windup ring, and bull-rushes at high speed.
-- **Floor 5 Boss Encounter**: **Malakor, the Obsidian King** in a custom pillared sanctum with a two-phase AI featuring aimed fan volleys, radial fire novas, obsidian charges, and slime minion summons.
-- **Health Pickups**: Found in dungeon rooms and occasionally dropped by slain monsters to restore HP and award bonus score.
-- **Game Over & Victory Screens**: Full run summary with instant replay (`ENTER` / `R`) or return to the Main Menu (`M`).
+- **Fixed Mouse & Aiming (Zero Mouse Required!)**:
+  - The window never traps or grabs your cursor (`pygame.event.set_grab(False)`).
+  - **Smart Multi-Modal Aiming**:
+    1. **Twin-Stick Arrow Keys**: Press or hold the **Arrow Keys** to aim in any 8-way direction while moving with `WASD`.
+    2. **Auto-Target Assist**: Automatically locks onto the nearest monster in melee/mid range so attacks always land cleanly without touching the mouse.
+    3. **Movement Aiming**: Faces the direction you move when no enemies are nearby.
+    4. **Optional Mouse Aiming**: Only aims toward the mouse cursor when you actively move the mouse.
+- **Unique "Obsidian Neon-Noir" Art Style**:
+  - 2.5D chiseled obsidian brickwork with bevels, mortar lines, carved glowing runes, and northern wall drop-shadows.
+  - Dynamic additive radial lighting on flickering wall sconces/torches, projectiles, stairs, and characters, framed by an atmospheric vignette.
+  - Flowing animated cape physics, glowing arcane visor eyes, idle rune-blade rendering, dash afterimages, jagged lightning bolts, and destructible wooden crates.
+- **4 Active Player Abilities + 3-Hit Sword Combo**:
+  - **Primary Attack (`J` / `SPACE` / Left-Click)**: 3-step crescent blade combo with forward combat lunge; the 3rd hit is a wide golden critical finisher. Deflects enemy projectiles!
+  - **Whirlwind Cleave (`Q` / `1` / `U`)**: 360° spinning blade storm that damages all surrounding enemies and shatters incoming projectiles.
+  - **Eldritch Nova (`E` / `2` / `I`)**: Fires a ring of 8 piercing arcane lances outward in all directions.
+  - **Chain Lightning (`R` / `3` / `O`)**: Calls down high-voltage arcs that jump between up to 4 nearby monsters.
+  - **Phantom Dash (`SHIFT` / `K` / Right-Click)**: High-speed invulnerable phase-dash that leaves glowing afterimages and damages enemies you pass through.
+- **XP, Level-Up Relic Drafts & Steam Achievements**:
+  - Slaying monsters grants XP; leveling up pauses the action to let you draft 1 of 3 **Obsidian Relics** (*Vampiric Obsidian Edge*, *Astral Storm Capacitor*, *Heart of the Colossus*, *Quicksilver Greaves*, *Eldritch Overload Core*).
+  - 5 built-in **Steam Achievements** with live in-game unlock toasts and persistence in `highscore.json`.
+  - Procedural in-memory retro synth sound effects (`audio.py`) with automatic silent fallback if no audio device is present.
 
 ## Project Structure
 
-- `main.py` — Entry point, game loop, input handling, and state transitions (`MENU`, `PLAYING`, `GAME_OVER`, `VICTORY`).
-- `settings.py` — Screen configuration, gameplay constants, tuning parameters, and color palette.
-- `dungeon.py` — Procedural room & corridor generator, line-of-sight raymarching, and wall-sliding physics.
-- `entities.py` — `Player`, `Enemy` (3 monster types + Floor 5 Boss), `Projectile`, `HealthPickup`, `Particle`, and `FloatingText`.
-- `ui.py` — 2D procedural sprite rendering, camera tracking & screen shake, HUD, minimap, and menu overlays.
-- `highscore.py` — JSON-based high score loading and saving (`highscore.json`).
+- `main.py` — Game loop, multi-modal smart aiming, ability execution, combat collision, Relic draft, Pause menu, and state machine.
+- `settings.py` — Obsidian Neon-Noir palette, ability tuning, Relic catalog, and Achievement definitions.
+- `dungeon.py` — Procedural room & corridor generator, wall torches, breakable crates, blood/rune floor decals, and Floor 5 Boss Sanctum.
+- `entities.py` — `Player`, `Enemy` (Venom Slime, Void Cultist, Bone Juggernaut, and Malakor Boss), `Projectile`, `HealthPickup`, `DashAfterimage`, `LightningBoltFX`, and `ShockwaveRingFX`.
+- `ui.py` — 2.5D tile & lighting renderer, ability cooldown hotbar, XP/HP HUD, minimap, Relic selection modal, Pause screen, and Main Menu.
+- `audio.py` — Zero-dependency procedural sound synthesizer.
+- `highscore.py` — Persistent high score, career stats, and achievement storage (`highscore.json`).
 
 ## How to Run
 
-1. Install dependencies:
-
 ```bash
 pip install -r requirements.txt
-```
-
-2. Launch the game:
-
-```bash
 python3 main.py
 ```
 
-Optional flags:
-- `python3 main.py --seed 12345` — Run with a deterministic dungeon seed.
-- `python3 main.py --smoke-test` — Run a quick automated verification across all 5 floors.
-
 ## Controls
 
-| Action | Primary Key / Mouse | Alternate Key |
+| Action | Keyboard (No Mouse Needed) | Alternate / Mouse |
 | :--- | :--- | :--- |
-| Move | `W` `A` `S` `D` | Arrow Keys |
-| Sword Attack | Left Mouse Button | `SPACE` or `J` |
-| Dash | `Left Shift` / `Right Shift` | Right Mouse Button or `K` |
-| Start / Confirm | `ENTER` or `SPACE` | Left Click |
-| Return to Menu / Quit | `M` / `ESC` | — |
+| **Move** | `W` `A` `S` `D` | Arrow Keys |
+| **Aim Direction** | **Arrow Keys** or Auto-Target | Mouse Cursor |
+| **3-Hit Sword Combo** | `SPACE` or `J` | Left Mouse Button |
+| **Whirlwind Cleave (AoE)** | `Q` or `1` | `U` |
+| **Eldritch Nova (8 Lances)** | `E` or `2` | `I` |
+| **Chain Lightning** | `R` or `3` | `O` |
+| **Phantom Dash (Dodge)** | `Left Shift` / `Right Shift` | `K` or Right Click |
+| **Pause / Resume** | `ESC` or `P` | — |
